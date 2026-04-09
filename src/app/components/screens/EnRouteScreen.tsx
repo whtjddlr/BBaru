@@ -130,23 +130,76 @@ export function EnRouteScreen() {
             </div>
           </div>
 
-          {/* Upcoming Events */}
+          {/* Upcoming Events - Visual Progress */}
           <div>
-            <h3 className="text-neutral-900 mb-3" style={{ fontWeight: 600 }}>다가오는 이벤트</h3>
-            <div className="space-y-2">
-              <div className="flex items-center gap-3 p-3 bg-amber-50 rounded-xl border border-amber-200">
-                <AlertCircle className="w-5 h-5 text-amber-600" />
-                <div className="flex-1">
-                  <div className="text-sm text-amber-900 mb-0.5" style={{ fontWeight: 600 }}>횡단보도 신호 대기</div>
-                  <div className="text-xs text-amber-700">120m 전방 · 약 45초 대기 예상</div>
+            <h3 className="text-neutral-900 mb-4" style={{ fontWeight: 600 }}>다가오는 구간</h3>
+
+            {/* Visual Mini Timeline */}
+            <div className="bg-white rounded-2xl p-4 border border-neutral-200 shadow-sm">
+              <div className="space-y-0">
+                {/* Current Position Indicator */}
+                <div className="flex items-center gap-3 mb-4 pb-4 border-b border-neutral-100">
+                  <div className="w-3 h-3 rounded-full bg-blue-600 border-4 border-blue-200 animate-pulse" />
+                  <div className="flex-1">
+                    <div className="text-xs text-blue-600 mb-1" style={{ fontWeight: 600 }}>현재 위치</div>
+                    <div className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>강남역 2번 출구 앞</div>
+                  </div>
+                  <div className="text-xs text-neutral-500 bg-neutral-50 px-3 py-1.5 rounded-full">35% 완료</div>
+                </div>
+
+                {/* Next: Traffic Light */}
+                <div className="flex items-center gap-3 py-3 border-l-4 border-amber-400 -ml-1 pl-4">
+                  <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center">
+                    <AlertCircle className="w-5 h-5 text-amber-600" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>횡단보도 신호 대기</span>
+                      <span className="text-xs text-amber-700 bg-amber-50 px-2 py-1 rounded" style={{ fontWeight: 600 }}>120m</span>
+                    </div>
+                    <div className="text-xs text-amber-700 mb-2">약 45초 대기 예상</div>
+                    <div className="flex items-center gap-2 text-xs text-neutral-600">
+                      <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                      <span>재계산 지점</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Then: Subway */}
+                <div className="flex items-center gap-3 py-3 border-l-4 border-neutral-200 -ml-1 pl-4">
+                  <div className="w-10 h-10 rounded-xl bg-green-50 border border-green-200 flex items-center justify-center">
+                    <div className="w-6 h-6 rounded-full bg-green-600 flex items-center justify-center text-white text-xs" style={{ fontWeight: 700 }}>2</div>
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>2호선 탑승</span>
+                      <span className="text-xs text-neutral-500">3분 후</span>
+                    </div>
+                    <div className="text-xs text-neutral-500">09:35 열차 · 강남 → 선릉</div>
+                  </div>
+                </div>
+
+                {/* Final: Walk to Destination */}
+                <div className="flex items-center gap-3 py-3 border-l-4 border-neutral-200 -ml-1 pl-4">
+                  <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center">
+                    <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                    </svg>
+                  </div>
+                  <div className="flex-1">
+                    <div className="text-sm text-neutral-900 mb-1" style={{ fontWeight: 600 }}>하차 후 도보</div>
+                    <div className="text-xs text-neutral-500">선릉역 3번 출구 · 약 2분</div>
+                  </div>
                 </div>
               </div>
-              <div className="flex items-center gap-3 p-3 bg-neutral-50 rounded-xl border border-neutral-200">
-                <Clock className="w-5 h-5 text-neutral-600" />
-                <div className="flex-1">
-                  <div className="text-sm text-neutral-900 mb-0.5" style={{ fontWeight: 600 }}>09:35 열차 탑승</div>
-                  <div className="text-xs text-neutral-600">2호선 승강장 · 3분 후</div>
-                </div>
+            </div>
+
+            {/* Time to Next Event */}
+            <div className="mt-3 bg-amber-50 rounded-xl p-3 border border-amber-200 flex items-center gap-3">
+              <Clock className="w-5 h-5 text-amber-600" />
+              <div className="flex-1">
+                <div className="text-sm text-amber-900" style={{ fontWeight: 600 }}>다음 이벤트까지</div>
+                <div className="text-xs text-amber-700">횡단보도 앞 약 90초 후 도착</div>
               </div>
             </div>
           </div>
