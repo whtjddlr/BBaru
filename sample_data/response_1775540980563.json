@@ -1,0 +1,148 @@
+{
+  "header": {
+    "resultCode": "K0",
+    "resultMsg": "NORMAL_SERVICE",
+    "context": "https://ido.sharedata.go.kr/dcat/catalog/c0006.json",
+    "dataset": "KLID-DATASET-d0006",
+    "service": "KLID-d0006-s0002"
+  },
+  "body": {
+    "totalCount": 24149,
+    "pageNo": 1,
+    "numOfRows": 10,
+    "items": {
+      "item": [
+        {
+          "stdgCd": "3100000000",
+          "lclgvNm": "울산광역시",
+          "rteId": "192000001",
+          "bstaId": "195014824",
+          "bstaNm": "농수산물유통센터정문",
+          "bstaNo": "14824",
+          "bstaSn": "1",
+          "bstaLat": "35.5786000100",
+          "bstaLot": "129.3562867000",
+          "drcGbnCd": " ",
+          "totDt": "20260407062355"
+        },
+        {
+          "stdgCd": "3100000000",
+          "lclgvNm": "울산광역시",
+          "rteId": "192000001",
+          "bstaId": "195014816",
+          "bstaNm": "롯데마트진장점",
+          "bstaNo": "14816",
+          "bstaSn": "2",
+          "bstaLat": "35.5756707200",
+          "bstaLot": "129.3564213000",
+          "drcGbnCd": " ",
+          "totDt": "20260407062355"
+        },
+        {
+          "stdgCd": "3100000000",
+          "lclgvNm": "울산광역시",
+          "rteId": "192000001",
+          "bstaId": "195014820",
+          "bstaNm": "울산우편집중국앞",
+          "bstaNo": "14820",
+          "bstaSn": "3",
+          "bstaLat": "35.5734716700",
+          "bstaLot": "129.3565340000",
+          "drcGbnCd": " ",
+          "totDt": "20260407062355"
+        },
+        {
+          "stdgCd": "3100000000",
+          "lclgvNm": "울산광역시",
+          "rteId": "192000001",
+          "bstaId": "195014822",
+          "bstaNm": "차량등록사업소입구",
+          "bstaNo": "14822",
+          "bstaSn": "4",
+          "bstaLat": "35.5705907600",
+          "bstaLot": "129.3558744000",
+          "drcGbnCd": " ",
+          "totDt": "20260407062355"
+        },
+        {
+          "stdgCd": "3100000000",
+          "lclgvNm": "울산광역시",
+          "rteId": "192000001",
+          "bstaId": "192040501",
+          "bstaNm": "중부경찰서",
+          "bstaNo": "40501",
+          "bstaSn": "5",
+          "bstaLat": "35.5702457400",
+          "bstaLot": "129.3500157000",
+          "drcGbnCd": " ",
+          "totDt": "20260407062355"
+        },
+        {
+          "stdgCd": "3100000000",
+          "lclgvNm": "울산광역시",
+          "rteId": "192000001",
+          "bstaId": "192072801",
+          "bstaNm": "삼일아파트앞",
+          "bstaNo": "72801",
+          "bstaSn": "6",
+          "bstaLat": "35.5680386600",
+          "bstaLot": "129.3460560000",
+          "drcGbnCd": " ",
+          "totDt": "20260407062355"
+        },
+        {
+          "stdgCd": "3100000000",
+          "lclgvNm": "울산광역시",
+          "rteId": "192000001",
+          "bstaId": "192062805",
+          "bstaNm": "남외중학교앞",
+          "bstaNo": "62805",
+          "bstaSn": "7",
+          "bstaLat": "35.5668682600",
+          "bstaLot": "129.3489391000",
+          "drcGbnCd": " ",
+          "totDt": "20260407062355"
+        },
+        {
+          "stdgCd": "3100000000",
+          "lclgvNm": "울산광역시",
+          "rteId": "192000001",
+          "bstaId": "192062803",
+          "bstaNm": "푸르지오아파트",
+          "bstaNo": "62803",
+          "bstaSn": "8",
+          "bstaLat": "35.5652860400",
+          "bstaLot": "129.3492871000",
+          "drcGbnCd": " ",
+          "totDt": "20260407062355"
+        },
+        {
+          "stdgCd": "3100000000",
+          "lclgvNm": "울산광역시",
+          "rteId": "192000001",
+          "bstaId": "192062801",
+          "bstaNm": "푸르지오2차아파트",
+          "bstaNo": "62801",
+          "bstaSn": "9",
+          "bstaLat": "35.5652923100",
+          "bstaLot": "129.3462607000",
+          "drcGbnCd": " ",
+          "totDt": "20260407062356"
+        },
+        {
+          "stdgCd": "3100000000",
+          "lclgvNm": "울산광역시",
+          "rteId": "192000001",
+          "bstaId": "192072905",
+          "bstaNm": "종합운동장서문입구",
+          "bstaNo": "72905",
+          "bstaSn": "10",
+          "bstaLat": "35.5635619200",
+          "bstaLot": "129.3452708000",
+          "drcGbnCd": " ",
+          "totDt": "20260407062356"
+        }
+      ]
+    }
+  }
+}

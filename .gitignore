@@ -1,0 +1,16 @@
+.env
+.env.local
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+frontend/node_modules/
+frontend/.vite/
+.vercel
+logs/
+_tmp_*
+data/*.db
+sample_data/cache/*.csv
+frontend/android/app/build/
+frontend/android/capacitor-cordova-android-plugins/

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ app_name }}</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="page-shell">
+      <section class="header-panel">
+        <div class="header-copy">
+          <p class="section-eyebrow">SafeETA</p>
+          <h1>{{ app_name }}</h1>
+          <p class="header-body">
+            서울 생활권에서 신호등과 지하철 흐름을 기준으로 지금 이동해도 되는지 판단하는 실시간 의사결정 서비스입니다.
+          </p>
+        </div>
+
+        <div class="header-summary">
+          <div class="summary-box">
+            <span class="summary-box-label">운영 모드</span>
+            <strong id="mode-chip">MODE</strong>
+          </div>
+          <div class="summary-box">
+            <span class="summary-box-label">현재 상태</span>
+            <strong id="status-summary">실시간 계산 준비 중</strong>
+          </div>
+          <div class="summary-box">
+            <span class="summary-box-label">GW 기본 주소</span>
+            <strong id="gateway-base">확인 중</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="main-grid">
+        <article class="card result-card">
+          <div class="card-head">
+            <div>
+              <p class="section-eyebrow">판단 결과</p>
+              <h2 id="decision-title">판단 결과</h2>
+              <p id="decision-subtitle" class="card-description">실시간 계산 대기 중</p>
+            </div>
+            <div class="score-box">
+              <span>위험도</span>
+              <strong id="risk-meter-value">0</strong>
+            </div>
+          </div>
+
+          <div id="scenario-meta" class="scenario-meta"></div>
+          <div id="summary-grid" class="summary-grid"></div>
+          <div id="risk-banner" class="risk-banner"></div>
+          <p id="explanation" class="explanation"></p>
+          <div id="recommendations" class="recommendations"></div>
+        </article>
+
+        <aside class="side-column">
+          <article class="card controls-card">
+            <div class="card-head compact">
+              <div>
+                <p class="section-eyebrow">입력 조건</p>
+                <h2>시나리오 설정</h2>
+              </div>
+            </div>
+
+            <form id="scenario-form" class="form-stack">
+              <label>
+                <span>데모 시나리오</span>
+                <select id="scenario-select" name="scenario"></select>
+              </label>
+
+              <label>
+                <span>판단 기준</span>
+                <select id="mode-select" name="preference_mode">
+                  <option value="safety_first">안전 우선</option>
+                  <option value="balanced">균형</option>
+                  <option value="time_first">정시 우선</option>
+                </select>
+              </label>
+
+              <label>
+                <span>걷기 속도</span>
+                <input id="walk-speed" type="range" min="0.8" max="1.8" step="0.05" value="1.25" />
+                <strong id="walk-speed-value">1.25</strong>
+              </label>
+
+              <label>
+                <span>안전 버퍼</span>
+                <input id="safety-buffer" type="range" min="0" max="60" step="5" value="20" />
+                <strong id="safety-buffer-value">20초</strong>
+              </label>
+
+              <div class="field-grid">
+                <label>
+                  <span>도보 거리</span>
+                  <input id="walk-distance" type="number" min="50" max="3000" step="10" />
+                </label>
+
+                <label>
+                  <span>신호 대기</span>
+                  <input id="signal-wait" type="number" min="0" max="300" step="1" />
+                </label>
+              </div>
+
+              <button type="submit" class="primary-button">판단 다시 계산</button>
+            </form>
+          </article>
+
+          <article class="card">
+            <div class="card-head compact">
+              <div>
+                <p class="section-eyebrow">데이터 상태</p>
+                <h2>연결 정보</h2>
+              </div>
+            </div>
+            <div id="key-status" class="status-summary">확인 중</div>
+            <div id="source-list" class="source-list"></div>
+          </article>
+        </aside>
+      </section>
+
+      <section class="detail-grid">
+        <article class="card">
+          <div class="card-head compact">
+            <div>
+              <p class="section-eyebrow">판단 근거</p>
+              <h2>실시간 정보</h2>
+            </div>
+          </div>
+          <div id="debug-highlights" class="debug-highlights">
+            <div class="debug-pill">실시간 근거를 불러오는 중입니다.</div>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-head compact">
+            <div>
+              <p class="section-eyebrow">처리 흐름</p>
+              <h2>서비스 방식</h2>
+            </div>
+          </div>
+          <ol class="flow-list">
+            <li>보행 신호와 횡단 대기시간을 계산합니다.</li>
+            <li>지하철 도착정보와 현재 위치를 함께 반영합니다.</li>
+            <li>혼잡도와 데이터 신뢰도를 보정합니다.</li>
+            <li>놓침 확률과 횡단 위험을 종합해 행동을 제안합니다.</li>
+          </ol>
+        </article>
+      </section>
+    </main>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

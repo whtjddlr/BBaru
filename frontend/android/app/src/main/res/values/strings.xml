@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">SafeETA</string>
+    <string name="title_activity_main">SafeETA</string>
+    <string name="package_name">kr.safeeta.mobile</string>
+    <string name="custom_url_scheme">kr.safeeta.mobile</string>
+</resources>
