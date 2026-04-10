@@ -89,6 +89,16 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+function getHeightBasedWalkPreset(heightCm) {
+  const cm = Number(heightCm);
+  if (!Number.isFinite(cm) || cm < 120 || cm > 230) return null;
+  if (cm < 155) return WALK_SPEED_OPTIONS.find((option) => option.value === "slow");
+  if (cm < 165) return WALK_SPEED_OPTIONS.find((option) => option.value === "easy");
+  if (cm < 175) return WALK_SPEED_OPTIONS.find((option) => option.value === "normal");
+  if (cm < 185) return WALK_SPEED_OPTIONS.find((option) => option.value === "fast");
+  return WALK_SPEED_OPTIONS.find((option) => option.value === "rush");
+}
+
 function formatClock(date) {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "-";
   return new Intl.DateTimeFormat("ko-KR", {
@@ -316,6 +326,7 @@ export default function GithubConnectedApp() {
   const [selectedScenarioId, setSelectedScenarioId] = useState("");
   const [activeMode, setActiveMode] = useState("balanced");
   const [walkSpeedPreset, setWalkSpeedPreset] = useState("normal");
+  const [heightCm, setHeightCm] = useState("");
   const [targetArrivalTime, setTargetArrivalTime] = useState("10:00");
   const [resultsByMode, setResultsByMode] = useState({});
   const [routeSnapshot, setRouteSnapshot] = useState(null);
@@ -360,6 +371,7 @@ export default function GithubConnectedApp() {
     () => WALK_SPEED_OPTIONS.find((option) => option.value === walkSpeedPreset) || WALK_SPEED_OPTIONS[2],
     [walkSpeedPreset],
   );
+  const heightRecommendation = useMemo(() => getHeightBasedWalkPreset(heightCm), [heightCm]);
   const routeCandidate = useMemo(() => pickPrimaryCandidate(routeSnapshot), [routeSnapshot]);
   const routePath = useMemo(() => flattenRoutePath(routeCandidate), [routeCandidate]);
   const activeResult = resultsByMode[activeMode] || resultsByMode.balanced || null;
@@ -759,6 +771,45 @@ export default function GithubConnectedApp() {
                       {option.label}
                     </button>
                   ))}
+                </div>
+                <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold text-slate-700">키 기준 기본 속도 추천</div>
+                      <div className="mt-1 text-[11px] leading-5 text-slate-500">
+                        자기 보행속도를 잘 모르겠다면 키를 입력해서 기본 속도를 추천받을 수 있어요.
+                      </div>
+                    </div>
+                    {heightRecommendation ? <Badge tone="early">{`추천 ${heightRecommendation.label}`}</Badge> : null}
+                  </div>
+                  <div className="mt-3 flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="120"
+                      max="230"
+                      inputMode="numeric"
+                      placeholder="예: 170"
+                      value={heightCm}
+                      onChange={(event) => setHeightCm(event.target.value)}
+                      className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 outline-none transition focus:border-blue-300"
+                    />
+                    <span className="text-sm font-semibold text-slate-500">cm</span>
+                    <button
+                      type="button"
+                      onClick={() => heightRecommendation && setWalkSpeedPreset(heightRecommendation.value)}
+                      disabled={!heightRecommendation}
+                      className="shrink-0 rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                    >
+                      추천 적용
+                    </button>
+                  </div>
+                  {heightRecommendation ? (
+                    <div className="mt-2 text-[11px] text-slate-500">
+                      {`${heightCm}cm 기준 추천은 ${heightRecommendation.label} · ${heightRecommendation.hint}`}
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-[11px] text-slate-400">120cm~230cm 범위에서 입력하면 추천해드려요.</div>
+                  )}
                 </div>
               </div>
 
