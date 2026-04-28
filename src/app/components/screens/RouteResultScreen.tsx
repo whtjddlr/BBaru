@@ -1,8 +1,7 @@
-import { ArrowLeft, Clock, TrendingUp, TrendingDown, Minus, Timer, Play, AlertTriangle } from "lucide-react";
+import { ArrowLeft, Clock, Play, Timer } from "lucide-react";
 import { MapView } from "../MapView";
 import { BottomSheet } from "../BottomSheet";
 import { StatusBadge } from "../StatusBadge";
-import { ActionCard } from "../ActionCard";
 import { TimeDisplay } from "../TimeDisplay";
 import {
   buildRoutePlan,
@@ -121,41 +120,60 @@ export function RouteResultScreen({
 
       {/* Bottom Sheet with Details */}
       <BottomSheet defaultExpanded={false}>
-        <div className="space-y-4">
+        <div className="space-y-5">
           {/* Action Guidance */}
-          <div>
-            <h3 className="text-neutral-900 mb-3" style={{ fontWeight: 600 }}>출발 가이드</h3>
-            <ActionCard
-              icon={Play}
-              title={routePlan.action.title}
-              description={routePlan.action.description}
-              variant={routePlan.action.tone}
-            />
+          <div className="space-y-3">
+            <div className="flex items-center justify-between pr-10">
+              <h3 className="text-lg text-neutral-900" style={{ fontWeight: 700 }}>
+                출발 가이드
+              </h3>
+              <div className="text-xs text-neutral-500 tabular-nums">
+                {routePlan.summary.recommendedDepartureTime} 출발
+              </div>
+            </div>
+            <div className="rounded-2xl bg-blue-600 px-4 py-4 text-white shadow-sm">
+              <div className="flex items-start gap-3">
+                <div className="w-11 h-11 rounded-xl bg-white/15 flex items-center justify-center shrink-0">
+                  <Play className="w-5 h-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs text-white/75 mb-1">추천 판단</div>
+                  <div className="text-base leading-6" style={{ fontWeight: 700 }}>
+                    {routePlan.action.title}
+                  </div>
+                  <div className="text-sm text-white/85 leading-5 mt-1">
+                    {getCompactActionDescription(routePlan)}
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* Mode Comparison */}
-          <div>
-            <h3 className="text-neutral-900 mb-3" style={{ fontWeight: 600 }}>도착 최적화 모드</h3>
-            <div className="grid grid-cols-3 gap-2">
+          <div className="space-y-3">
+            <h3 className="text-lg text-neutral-900" style={{ fontWeight: 700 }}>
+              도착 최적화 모드
+            </h3>
+            <div className="grid grid-cols-3 gap-2 rounded-2xl bg-neutral-100 p-1">
               {routePlan.strategies.map((strategy) => {
                 const isSelected = strategy.strategy === routePlan.request.strategy;
 
                 return (
                   <button
                     key={strategy.strategy}
-                    className={`p-3 border-2 rounded-xl transition-colors ${
+                    className={`h-[68px] rounded-xl transition-colors ${
                       isSelected
-                        ? "border-blue-600 bg-blue-50"
-                        : "border-neutral-200 bg-white hover:border-blue-300"
+                        ? "bg-white text-blue-600 shadow-sm"
+                        : "text-neutral-700 hover:bg-white/60"
                     }`}
                   >
                     <div
-                      className={`text-sm mb-1 ${isSelected ? "text-blue-600" : ""}`}
-                      style={{ fontWeight: 600 }}
+                      className="text-sm mb-1"
+                      style={{ fontWeight: isSelected ? 700 : 600 }}
                     >
                       {strategy.label}
                     </div>
-                    <div className={`text-xs ${isSelected ? "text-blue-600" : "text-neutral-500"}`}>
+                    <div className={`text-xs tabular-nums ${isSelected ? "text-blue-600" : "text-neutral-500"}`}>
                       {strategy.expectedArrivalTime} 도착
                     </div>
                   </button>
@@ -377,6 +395,20 @@ export function RouteResultScreen({
       </BottomSheet>
     </div>
   );
+}
+
+function getCompactActionDescription(routePlan: RoutePlan): string {
+  const delta = routePlan.summary.arrivalDeltaMinutes;
+
+  if (delta === 0) {
+    return "목표 시각에 맞춰 도착하도록 계산했습니다.";
+  }
+
+  if (delta < 0) {
+    return `${Math.abs(delta)}분 여유로 도착하도록 출발 시각을 잡았습니다.`;
+  }
+
+  return `${delta}분 늦을 수 있어 출발을 앞당겨야 합니다.`;
 }
 
 function toMapPoint(
