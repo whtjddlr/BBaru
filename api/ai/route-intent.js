@@ -1,3 +1,5 @@
+import { readJsonBody } from "../_utils/body.js";
+
 const SOLAR_API_URL = getSolarApiUrl();
 const SOLAR_MODEL = process.env.UPSTAGE_SOLAR_MODEL || process.env.UPSTAGE_MODEL || "solar-pro3";
 
@@ -43,8 +45,7 @@ export default async function handler(request, response) {
   let body;
 
   try {
-    body =
-      typeof request.body === "string" ? JSON.parse(request.body || "{}") : request.body;
+    body = await readJsonBody(request);
   } catch {
     return response.status(400).json({ error: "invalid JSON body" });
   }
@@ -55,6 +56,18 @@ export default async function handler(request, response) {
     return response.status(400).json({ error: "text is required" });
   }
 
+  try {
+    const intent = await requestSolarRouteIntent(text, apiKey);
+    return response.status(200).json({ intent });
+  } catch (error) {
+    return response.status(error.statusCode || 500).json({
+      code: error.code || "SOLAR_PARSE_ERROR",
+      error: error instanceof Error ? error.message : "Solar response could not be parsed",
+    });
+  }
+}
+
+async function requestSolarRouteIntent(text, apiKey) {
   try {
     const solarResponse = await fetch(SOLAR_API_URL, {
       method: "POST",
@@ -74,30 +87,40 @@ export default async function handler(request, response) {
 
     if (!solarResponse.ok) {
       const errorText = await solarResponse.text();
-      return response.status(502).json({
-        code: "SOLAR_UPSTREAM_ERROR",
-        error: errorText || "Solar request failed",
-      });
+      throw createApiError(
+        "SOLAR_UPSTREAM_ERROR",
+        errorText || "Solar request failed",
+        502
+      );
     }
 
     const payload = await solarResponse.json();
     const content = payload?.choices?.[0]?.message?.content;
 
     if (!content) {
-      return response.status(502).json({
-        code: "SOLAR_EMPTY_RESPONSE",
-        error: "Solar returned an empty response",
-      });
+      throw createApiError("SOLAR_EMPTY_RESPONSE", "Solar returned an empty response", 502);
     }
 
     const intent = JSON.parse(extractJson(content));
-    return response.status(200).json({ intent });
+    return intent;
   } catch (error) {
-    return response.status(500).json({
-      code: "SOLAR_PARSE_ERROR",
-      error: error instanceof Error ? error.message : "Solar response could not be parsed",
-    });
+    if (error.statusCode) {
+      throw error;
+    }
+
+    throw createApiError(
+      "SOLAR_PARSE_ERROR",
+      error instanceof Error ? error.message : "Solar response could not be parsed",
+      500
+    );
   }
+}
+
+function createApiError(code, message, statusCode) {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = statusCode;
+  return error;
 }
 
 function extractJson(content) {

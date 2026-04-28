@@ -1,3 +1,5 @@
+import { readJsonBody } from "../_utils/body.js";
+
 const NAVER_GEOCODE_URL =
   process.env.NAVER_GEOCODE_BASE_URL ||
   "https://naveropenapi.apigw.ntruss.com/map-geocode/v2/geocode";
@@ -12,8 +14,7 @@ export default async function handler(request, response) {
   let body;
 
   try {
-    body =
-      typeof request.body === "string" ? JSON.parse(request.body || "{}") : request.body;
+    body = await readJsonBody(request);
   } catch {
     return response.status(400).json({ error: "invalid JSON body" });
   }

@@ -1,3 +1,5 @@
+import { readJsonBody } from "../_utils/body.js";
+
 const ODSAY_ROUTE_URL =
   process.env.ODSAY_API_BASE_URL || "https://api.odsay.com/v1/api/searchPubTransPathT";
 
@@ -19,8 +21,7 @@ export default async function handler(request, response) {
   let body;
 
   try {
-    body =
-      typeof request.body === "string" ? JSON.parse(request.body || "{}") : request.body;
+    body = await readJsonBody(request);
   } catch {
     return response.status(400).json({ error: "invalid JSON body" });
   }
