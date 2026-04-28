@@ -20,6 +20,23 @@ interface MapPoint {
   name: string;
 }
 
+interface RoutePathPoint {
+  lat: number;
+  lng: number;
+}
+
+interface OdsayRouteGeometryResponse {
+  routeGeometry?: {
+    source?: string;
+    points?: RoutePathPoint[];
+  };
+  result?: {
+    path?: Array<{
+      subPath?: Array<Record<string, unknown>>;
+    }>;
+  };
+}
+
 interface MapViewProps {
   origin?: MapPoint;
   destination?: MapPoint;
@@ -66,6 +83,7 @@ export function MapView({
     resolvedOrigin,
     resolvedDestination
   );
+  const routePath = useRoutePath(showRoute, resolvedOrigin, resolvedDestination);
 
   if (!credential) {
     return (
@@ -86,9 +104,69 @@ export function MapView({
       origin={resolvedOrigin}
       destination={resolvedDestination}
       currentPosition={resolvedCurrentPosition}
+      routePath={routePath}
       showRoute={showRoute}
     />
   );
+}
+
+function useRoutePath(
+  showRoute: boolean,
+  origin?: ResolvedMapPoint,
+  destination?: ResolvedMapPoint
+) {
+  const [routePath, setRoutePath] = useState<RoutePathPoint[] | undefined>();
+
+  useEffect(() => {
+    if (!showRoute || !origin || !destination) {
+      setRoutePath(undefined);
+      return;
+    }
+
+    const controller = new AbortController();
+
+    setRoutePath(undefined);
+
+    fetch("/api/mobility/odsay-route", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        origin: { lat: origin.lat, lng: origin.lng },
+        destination: { lat: destination.lat, lng: destination.lng },
+        searchPathType: 0,
+      }),
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`ODsay route failed: ${response.status}`);
+        }
+
+        return response.json() as Promise<OdsayRouteGeometryResponse>;
+      })
+      .then((payload) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        setRoutePath(extractRoutePath(payload, origin, destination));
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setRoutePath(undefined);
+        }
+      });
+
+    return () => controller.abort();
+  }, [
+    destination?.lat,
+    destination?.lng,
+    origin?.lat,
+    origin?.lng,
+    showRoute,
+  ]);
+
+  return routePath;
 }
 
 function NaverMap({
@@ -97,6 +175,7 @@ function NaverMap({
   origin,
   destination,
   currentPosition,
+  routePath,
   showRoute,
 }: {
   credential: NaverMapCredential;
@@ -104,6 +183,7 @@ function NaverMap({
   origin?: ResolvedMapPoint;
   destination?: ResolvedMapPoint;
   currentPosition?: { lat: number; lng: number };
+  routePath?: RoutePathPoint[];
   showRoute?: boolean;
 }) {
   const mapElementRef = useRef<HTMLDivElement>(null);
@@ -155,12 +235,15 @@ function NaverMap({
         }
 
         if (showRoute && origin && destination) {
+          const displayRoutePath = getDisplayRoutePath(origin, destination, routePath);
+
+          for (const point of displayRoutePath) {
+            bounds.extend(new naver.maps.LatLng(point.lat, point.lng));
+          }
+
           new naver.maps.Polyline({
             map,
-            path: [
-              new naver.maps.LatLng(origin.lat, origin.lng),
-              new naver.maps.LatLng(destination.lat, destination.lng),
-            ],
+            path: displayRoutePath.map((point) => new naver.maps.LatLng(point.lat, point.lng)),
             strokeColor: "#2563EB",
             strokeOpacity: 0.9,
             strokeWeight: 6,
@@ -195,7 +278,7 @@ function NaverMap({
     return () => {
       isCancelled = true;
     };
-  }, [credential, currentPosition, destination, origin, showRoute, submodules]);
+  }, [credential, currentPosition, destination, origin, routePath, showRoute, submodules]);
 
   if (hasMapError) {
     return (
@@ -220,6 +303,142 @@ function NaverMap({
         </div>
       )}
     </div>
+  );
+}
+
+function extractRoutePath(
+  payload: OdsayRouteGeometryResponse,
+  origin: RoutePathPoint,
+  destination: RoutePathPoint
+) {
+  const geometryPoints = Array.isArray(payload.routeGeometry?.points)
+    ? payload.routeGeometry.points
+    : [];
+  const routePath = normalizeRoutePath([origin, ...geometryPoints, destination]);
+
+  if (routePath.length > 2) {
+    return routePath;
+  }
+
+  const subPathPoints = extractSubPathRoutePoints(payload);
+  const fallbackPath = normalizeRoutePath([origin, ...subPathPoints, destination]);
+
+  return fallbackPath.length > 2 ? fallbackPath : undefined;
+}
+
+function extractSubPathRoutePoints(payload: OdsayRouteGeometryResponse) {
+  const firstPath = payload.result?.path?.[0];
+  const subPaths = Array.isArray(firstPath?.subPath) ? firstPath.subPath : [];
+  const points: RoutePathPoint[] = [];
+
+  for (const subPath of subPaths) {
+    pushRoutePoint(points, {
+      lat: toNumber(subPath.startY),
+      lng: toNumber(subPath.startX),
+    });
+
+    const stations = Array.isArray((subPath.passStopList as any)?.stations)
+      ? (subPath.passStopList as any).stations
+      : [];
+
+    for (const station of stations) {
+      pushRoutePoint(points, {
+        lat: toNumber(station?.y),
+        lng: toNumber(station?.x),
+      });
+    }
+
+    pushRoutePoint(points, {
+      lat: toNumber(subPath.endY),
+      lng: toNumber(subPath.endX),
+    });
+  }
+
+  return points;
+}
+
+function getDisplayRoutePath(
+  origin: RoutePathPoint,
+  destination: RoutePathPoint,
+  routePath?: RoutePathPoint[]
+) {
+  const normalizedRoutePath = normalizeRoutePath(routePath ?? []);
+
+  if (normalizedRoutePath.length > 2) {
+    return normalizedRoutePath;
+  }
+
+  return buildEstimatedRoutePath(origin, destination);
+}
+
+function buildEstimatedRoutePath(origin: RoutePathPoint, destination: RoutePathPoint) {
+  const latDelta = destination.lat - origin.lat;
+  const lngDelta = destination.lng - origin.lng;
+  const bendScale = Math.max(Math.abs(latDelta), Math.abs(lngDelta), 0.004) * 0.18;
+  const normalLat = -lngDelta >= 0 ? bendScale : -bendScale;
+  const normalLng = latDelta >= 0 ? bendScale : -bendScale;
+
+  return normalizeRoutePath([
+    origin,
+    {
+      lat: origin.lat + latDelta * 0.22 + normalLat * 0.6,
+      lng: origin.lng + lngDelta * 0.18 + normalLng * 0.6,
+    },
+    {
+      lat: origin.lat + latDelta * 0.5 + normalLat,
+      lng: origin.lng + lngDelta * 0.5 + normalLng,
+    },
+    {
+      lat: origin.lat + latDelta * 0.78 + normalLat * 0.35,
+      lng: origin.lng + lngDelta * 0.82 + normalLng * 0.35,
+    },
+    destination,
+  ]);
+}
+
+function normalizeRoutePath(points: RoutePathPoint[]) {
+  const normalized: RoutePathPoint[] = [];
+
+  for (const point of points) {
+    pushRoutePoint(normalized, point);
+  }
+
+  return normalized;
+}
+
+function pushRoutePoint(points: RoutePathPoint[], point: RoutePathPoint) {
+  if (!isRouteCoordinate(point)) {
+    return;
+  }
+
+  const previous = points[points.length - 1];
+
+  if (
+    previous &&
+    Math.abs(previous.lat - point.lat) <= 0.00001 &&
+    Math.abs(previous.lng - point.lng) <= 0.00001
+  ) {
+    return;
+  }
+
+  points.push({
+    lat: point.lat,
+    lng: point.lng,
+  });
+}
+
+function toNumber(value: unknown) {
+  return typeof value === "number" ? value : Number(value);
+}
+
+function isRouteCoordinate(point: RoutePathPoint) {
+  return (
+    Number.isFinite(point.lat) &&
+    Number.isFinite(point.lng) &&
+    point.lat >= 33 &&
+    point.lat <= 39 &&
+    point.lng >= 124 &&
+    point.lng <= 132
   );
 }
 
