@@ -2,15 +2,12 @@ import { type FormEvent, useState } from "react";
 import {
   AlertCircle,
   Clock,
-  Loader2,
   MapPin,
   Navigation2,
   Search,
-  Sparkles,
   TrendingUp,
 } from "lucide-react";
 import { type RouteIntent } from "../../domain/eta";
-import { interpretRouteRequest } from "../../services/ai/routeAssistant";
 
 interface MainScreenProps {
   onRouteSearch: (intent: RouteIntent) => void;
@@ -40,40 +37,26 @@ const recentRoutes: RouteIntent[] = [
 export function MainScreen({ onRouteSearch }: MainScreenProps) {
   const [origin, setOrigin] = useState("강남역 2번 출구");
   const [destination, setDestination] = useState("선릉역");
-  const [targetArrivalTime, setTargetArrivalTime] = useState("10:00");
-  const [naturalQuery, setNaturalQuery] = useState(
-    "강남역 2번 출구에서 선릉역까지 10시에 늦지 않게 도착하고 싶어"
-  );
-  const [isInterpreting, setIsInterpreting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
 
-    if (!naturalQuery.trim()) {
-      onRouteSearch({
-        origin,
-        destination,
-        targetArrivalTime,
-        strategy: "balanced",
-      });
+    const trimmedOrigin = origin.trim();
+    const trimmedDestination = destination.trim();
+
+    if (!trimmedOrigin || !trimmedDestination) {
+      setError("출발지와 도착지를 입력해 주세요.");
       return;
     }
 
-    setIsInterpreting(true);
-
-    try {
-      const interpretedIntent = await interpretRouteRequest(naturalQuery);
-      setOrigin(interpretedIntent.origin);
-      setDestination(interpretedIntent.destination);
-      setTargetArrivalTime(interpretedIntent.targetArrivalTime);
-      onRouteSearch(interpretedIntent);
-    } catch {
-      setError("요청을 읽지 못했어요. 출발지와 도착지를 직접 입력해 주세요.");
-    } finally {
-      setIsInterpreting(false);
-    }
+    onRouteSearch({
+      origin: trimmedOrigin,
+      destination: trimmedDestination,
+      targetArrivalTime: getDefaultArrivalTime(),
+      strategy: "balanced",
+    });
   };
 
   return (
@@ -96,7 +79,7 @@ export function MainScreen({ onRouteSearch }: MainScreenProps) {
           <h1 className="text-3xl text-[#1E40AF] mb-1" style={{ fontWeight: 700 }}>
             BBARU
           </h1>
-          <p className="text-sm text-neutral-600">목표 도착 시각에 맞추는 이동 판단</p>
+          <p className="text-sm text-neutral-600">출발지와 도착지만으로 이동 판단</p>
         </div>
       </div>
 
@@ -106,23 +89,6 @@ export function MainScreen({ onRouteSearch }: MainScreenProps) {
         className="absolute top-[130px] left-0 right-0 px-5 z-20"
       >
         <div className="space-y-3">
-          {/* Natural Language Input */}
-          <div className="bg-white rounded-xl px-4 py-3 shadow-sm border border-neutral-200">
-            <div className="flex items-center gap-2 mb-2">
-              <Sparkles className="w-4 h-4 text-blue-600" />
-              <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>
-                Solar 요청
-              </span>
-            </div>
-            <textarea
-              value={naturalQuery}
-              onChange={(event) => setNaturalQuery(event.target.value)}
-              rows={2}
-              placeholder="예: 강남역에서 선릉역까지 10시에 늦지 않게 도착하고 싶어"
-              className="w-full bg-transparent outline-none text-sm text-neutral-900 resize-none leading-5"
-            />
-          </div>
-
           {/* Origin Input */}
           <div className="flex items-center gap-3 bg-white rounded-xl px-4 py-3 shadow-sm border border-neutral-200">
             <div className="w-3 h-3 rounded-full bg-blue-600" />
@@ -149,19 +115,6 @@ export function MainScreen({ onRouteSearch }: MainScreenProps) {
             <Search className="w-5 h-5 text-neutral-400" />
           </div>
 
-          {/* Target Arrival Time */}
-          <div className="flex items-center gap-3 bg-white rounded-xl px-4 py-3 shadow-sm border border-neutral-200">
-            <Clock className="w-5 h-5 text-blue-600" />
-            <span className="text-sm text-neutral-600 mr-2">목표 도착 시각</span>
-            <input
-              type="time"
-              value={targetArrivalTime}
-              onChange={(event) => setTargetArrivalTime(event.target.value)}
-              className="flex-1 bg-transparent outline-none text-neutral-900 text-lg tabular-nums"
-              style={{ fontWeight: 600 }}
-            />
-          </div>
-
           {error && (
             <div className="flex items-center gap-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-xl px-3 py-2">
               <AlertCircle className="w-4 h-4" />
@@ -172,23 +125,16 @@ export function MainScreen({ onRouteSearch }: MainScreenProps) {
           {/* Search Button */}
           <button
             type="submit"
-            disabled={isInterpreting}
-            className="w-full bg-blue-600 disabled:bg-blue-300 text-white rounded-xl py-4 shadow-lg hover:bg-blue-700 transition-colors flex items-center justify-center gap-2"
+            className="w-full bg-blue-600 text-white rounded-xl py-4 shadow-lg hover:bg-blue-700 transition-colors flex items-center justify-center gap-2"
           >
-            {isInterpreting ? (
-              <Loader2 className="w-5 h-5 animate-spin" />
-            ) : (
-              <Navigation2 className="w-5 h-5" />
-            )}
-            <span style={{ fontWeight: 600 }}>
-              {isInterpreting ? "요청 분석 중" : "경로 계산"}
-            </span>
+            <Navigation2 className="w-5 h-5" />
+            <span style={{ fontWeight: 600 }}>경로 계산</span>
           </button>
         </div>
       </form>
 
       {/* Recent Routes */}
-      <div className="absolute top-[560px] left-0 right-0 bottom-0 px-5 overflow-y-auto pb-8">
+      <div className="absolute top-[360px] left-0 right-0 bottom-0 px-5 overflow-y-auto pb-8">
         <div className="mb-4">
           <h2 className="text-lg text-neutral-900 mb-3" style={{ fontWeight: 600 }}>
             최근 경로
@@ -219,15 +165,6 @@ export function MainScreen({ onRouteSearch }: MainScreenProps) {
                       >
                         {route.destination}
                       </span>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-xs text-neutral-500 mb-1">목표 도착</div>
-                    <div
-                      className="text-lg text-neutral-900 tabular-nums"
-                      style={{ fontWeight: 700 }}
-                    >
-                      {route.targetArrivalTime}
                     </div>
                   </div>
                 </div>
@@ -285,4 +222,13 @@ export function MainScreen({ onRouteSearch }: MainScreenProps) {
       </div>
     </div>
   );
+}
+
+function getDefaultArrivalTime(): string {
+  const now = new Date();
+  now.setMinutes(now.getMinutes() + 30);
+
+  return `${String(now.getHours()).padStart(2, "0")}:${String(
+    now.getMinutes()
+  ).padStart(2, "0")}`;
 }
