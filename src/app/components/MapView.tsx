@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { MapPin, Navigation } from "lucide-react";
 
 declare global {
   interface Window {
     naver?: any;
+    __bbaruNaverMapReady?: () => void;
   }
 }
 
@@ -31,7 +32,13 @@ interface ResolvedMapPoint extends MapPoint {
   isApproximate?: boolean;
 }
 
+interface NaverMapCredential {
+  parameter: "ncpKeyId" | "ncpClientId";
+  value: string;
+}
+
 const NAVER_MAP_SCRIPT_ID = "naver-map-sdk";
+const NAVER_MAP_CALLBACK = "__bbaruNaverMapReady";
 const DEFAULT_CENTER = { lat: 37.4979, lng: 127.0276 };
 const KNOWN_PLACE_COORDINATES: Array<{ keyword: string; lat: number; lng: number }> = [
   { keyword: "강남역", lat: 37.4979, lng: 127.0276 },
@@ -50,8 +57,7 @@ export function MapView({
   currentPosition,
   showRoute = false,
 }: MapViewProps) {
-  const clientId =
-    import.meta.env.VITE_NAVER_MAP_CLIENT_ID || import.meta.env.VITE_NAVER_MAP_KEY_ID;
+  const credential = useMemo(() => getNaverMapCredential(), []);
   const submodules = import.meta.env.VITE_NAVER_MAP_SUBMODULES;
   const resolvedOrigin = resolveMapPoint(origin);
   const resolvedDestination = resolveMapPoint(destination);
@@ -61,20 +67,21 @@ export function MapView({
     resolvedDestination
   );
 
-  if (!clientId) {
+  if (!credential) {
     return (
       <StaticMapFallback
         origin={resolvedOrigin}
         destination={resolvedDestination}
         currentPosition={resolvedCurrentPosition}
         showRoute={showRoute}
+        message="네이버 지도 키 미설정"
       />
     );
   }
 
   return (
     <NaverMap
-      clientId={clientId}
+      credential={credential}
       submodules={submodules}
       origin={resolvedOrigin}
       destination={resolvedDestination}
@@ -85,14 +92,14 @@ export function MapView({
 }
 
 function NaverMap({
-  clientId,
+  credential,
   submodules,
   origin,
   destination,
   currentPosition,
   showRoute,
 }: {
-  clientId: string;
+  credential: NaverMapCredential;
   submodules?: string;
   origin?: ResolvedMapPoint;
   destination?: ResolvedMapPoint;
@@ -106,7 +113,7 @@ function NaverMap({
   useEffect(() => {
     let isCancelled = false;
 
-    loadNaverMapSdk(clientId, submodules)
+    loadNaverMapSdk(credential, submodules)
       .then((naver) => {
         if (isCancelled || !mapElementRef.current) {
           return;
@@ -188,7 +195,7 @@ function NaverMap({
     return () => {
       isCancelled = true;
     };
-  }, [clientId, currentPosition, destination, origin, showRoute, submodules]);
+  }, [credential, currentPosition, destination, origin, showRoute, submodules]);
 
   if (hasMapError) {
     return (
@@ -197,6 +204,7 @@ function NaverMap({
         destination={destination}
         currentPosition={currentPosition}
         showRoute={showRoute}
+        message="네이버 지도 로딩 실패"
       />
     );
   }
@@ -220,11 +228,13 @@ function StaticMapFallback({
   destination,
   currentPosition,
   showRoute = false,
+  message = "네이버 지도 로딩 실패",
 }: {
   origin?: ResolvedMapPoint;
   destination?: ResolvedMapPoint;
   currentPosition?: { lat: number; lng: number };
   showRoute?: boolean;
+  message?: string;
 }) {
   return (
     <div className="relative w-full h-full bg-[#E8EDF3] overflow-hidden">
@@ -339,13 +349,16 @@ function StaticMapFallback({
         </div>
       )}
 
-      <div className="absolute left-8 top-32 text-xs text-neutral-500">네이버 지도 키 미설정</div>
+      <div className="absolute left-8 top-32 text-xs text-neutral-500">{message}</div>
       <div className="absolute right-12 bottom-32 text-xs text-neutral-500">fallback preview</div>
     </div>
   );
 }
 
-function loadNaverMapSdk(clientId: string, submodules?: string): Promise<any> {
+function loadNaverMapSdk(
+  credential: NaverMapCredential,
+  submodules?: string
+): Promise<any> {
   if (window.naver?.maps) {
     return Promise.resolve(window.naver);
   }
@@ -358,15 +371,24 @@ function loadNaverMapSdk(clientId: string, submodules?: string): Promise<any> {
     const existingScript = document.getElementById(NAVER_MAP_SCRIPT_ID);
 
     if (existingScript) {
+      if (window.naver?.maps) {
+        resolve(window.naver);
+        return;
+      }
+
       existingScript.addEventListener("load", () => resolve(window.naver));
-      existingScript.addEventListener("error", reject);
+      existingScript.addEventListener("error", () => {
+        naverMapPromise = null;
+        reject(new Error("NAVER Maps SDK failed to load"));
+      });
       return;
     }
 
     const script = document.createElement("script");
     script.id = NAVER_MAP_SCRIPT_ID;
     const url = new URL("https://oapi.map.naver.com/openapi/v3/maps.js");
-    url.searchParams.set("ncpKeyId", clientId);
+    url.searchParams.set(credential.parameter, credential.value);
+    url.searchParams.set("callback", NAVER_MAP_CALLBACK);
 
     if (submodules) {
       url.searchParams.set("submodules", submodules);
@@ -375,7 +397,7 @@ function loadNaverMapSdk(clientId: string, submodules?: string): Promise<any> {
     script.src = url.toString();
     script.async = true;
     script.defer = true;
-    script.onload = () => {
+    window[NAVER_MAP_CALLBACK] = () => {
       if (window.naver?.maps) {
         resolve(window.naver);
         return;
@@ -383,11 +405,35 @@ function loadNaverMapSdk(clientId: string, submodules?: string): Promise<any> {
 
       reject(new Error("NAVER Maps SDK did not initialize"));
     };
-    script.onerror = reject;
+    script.onerror = () => {
+      naverMapPromise = null;
+      reject(new Error("NAVER Maps SDK failed to load"));
+    };
     document.head.appendChild(script);
   });
 
   return naverMapPromise;
+}
+
+function getNaverMapCredential(): NaverMapCredential | undefined {
+  const keyId = import.meta.env.VITE_NAVER_MAP_KEY_ID;
+  const clientId = import.meta.env.VITE_NAVER_MAP_CLIENT_ID;
+
+  if (keyId) {
+    return {
+      parameter: "ncpKeyId",
+      value: keyId,
+    };
+  }
+
+  if (clientId) {
+    return {
+      parameter: "ncpClientId",
+      value: clientId,
+    };
+  }
+
+  return undefined;
 }
 
 function resolveMapPoint(point?: MapPoint): ResolvedMapPoint | undefined {
