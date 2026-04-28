@@ -20,7 +20,7 @@ export function BottomSheet({
       initial={{ y: isExpanded ? 0 : "60%" }}
       animate={{ y: isExpanded ? 0 : "60%" }}
       transition={{ type: "spring", damping: 30, stiffness: 300 }}
-      style={{ zIndex: 10 }}
+      style={{ zIndex: 40 }}
     >
       {/* Handle */}
       <button
