@@ -55,9 +55,14 @@ export default async function handler(request, response) {
       : payload?.error;
 
     if (!odsayResponse.ok || upstreamError) {
-      return response.status(502).json({
+      return response.status(200).json({
         code: "ODSAY_UPSTREAM_ERROR",
+        upstreamStatus: odsayResponse.status,
         error: upstreamError || payload,
+        routeGeometry: {
+          source: "estimated-fallback",
+          points: buildEstimatedGeometry(coordinates.origin, coordinates.destination),
+        },
       });
     }
 
@@ -212,6 +217,31 @@ function dedupeCoordinates(points) {
       Math.abs(previous.lng - point.lng) > 0.00001
     );
   });
+}
+
+function buildEstimatedGeometry(origin, destination) {
+  const latDelta = destination.lat - origin.lat;
+  const lngDelta = destination.lng - origin.lng;
+  const bendScale = Math.max(Math.abs(latDelta), Math.abs(lngDelta), 0.004) * 0.18;
+  const normalLat = -lngDelta >= 0 ? bendScale : -bendScale;
+  const normalLng = latDelta >= 0 ? bendScale : -bendScale;
+
+  return dedupeCoordinates([
+    origin,
+    {
+      lat: origin.lat + latDelta * 0.22 + normalLat * 0.6,
+      lng: origin.lng + lngDelta * 0.18 + normalLng * 0.6,
+    },
+    {
+      lat: origin.lat + latDelta * 0.5 + normalLat,
+      lng: origin.lng + lngDelta * 0.5 + normalLng,
+    },
+    {
+      lat: origin.lat + latDelta * 0.78 + normalLat * 0.35,
+      lng: origin.lng + lngDelta * 0.82 + normalLng * 0.35,
+    },
+    destination,
+  ]);
 }
 
 function normalizeCoordinates(body) {
