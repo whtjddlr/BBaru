@@ -211,7 +211,7 @@ function NaverMap({
 
   return (
     <div className="relative w-full h-full bg-[#E8EDF3] overflow-hidden">
-      <div ref={mapElementRef} className="absolute inset-0" />
+      <div ref={mapElementRef} className="w-full h-full" />
       {!isMapReady && (
         <div className="absolute inset-0 bg-[#E8EDF3] flex items-center justify-center">
           <div className="bg-white px-4 py-2 rounded-full border border-neutral-200 text-sm text-neutral-600 shadow-sm">
