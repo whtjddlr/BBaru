@@ -119,7 +119,7 @@ export function RouteResultScreen({
       </div>
 
       {/* Bottom Sheet with Details */}
-      <BottomSheet defaultExpanded={false}>
+      <BottomSheet defaultExpanded={false} collapsedOffset="50%">
         <div className="space-y-5">
           {/* Action Guidance */}
           <div className="space-y-3">

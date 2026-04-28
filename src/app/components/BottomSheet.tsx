@@ -1,24 +1,26 @@
 import { ReactNode, useState } from "react";
 import { ChevronUp, ChevronDown } from "lucide-react";
-import { motion, AnimatePresence } from "motion/react";
+import { motion } from "motion/react";
 
 interface BottomSheetProps {
   children: ReactNode;
   defaultExpanded?: boolean;
+  collapsedOffset?: string;
   snapPoints?: number[];
 }
 
 export function BottomSheet({
   children,
   defaultExpanded = false,
+  collapsedOffset = "60%",
 }: BottomSheetProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
 
   return (
     <motion.div
       className="absolute bottom-0 left-0 right-0 bg-white rounded-t-[28px] border border-neutral-200 shadow-[0_-16px_48px_rgba(15,23,42,0.16)]"
-      initial={{ y: isExpanded ? 0 : "60%" }}
-      animate={{ y: isExpanded ? 0 : "60%" }}
+      initial={{ y: isExpanded ? 0 : collapsedOffset }}
+      animate={{ y: isExpanded ? 0 : collapsedOffset }}
       transition={{ type: "spring", damping: 30, stiffness: 300 }}
       style={{ zIndex: 1000 }}
     >
