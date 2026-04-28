@@ -7,6 +7,7 @@ import { TimeDisplay } from "../TimeDisplay";
 import {
   buildRoutePlan,
   createDefaultRouteIntent,
+  type RoutePoint,
   type RoutePlan,
 } from "../../domain/eta";
 
@@ -26,6 +27,21 @@ export function EnRouteScreen({
   const boardingWait = routePlan.segments.find((segment) => segment.id === "boarding-wait");
   const mainRide = routePlan.segments.find((segment) => segment.id === "main-ride");
   const finalWalk = routePlan.segments.find((segment) => segment.id === "destination-walk");
+  const originMapPoint = toMapPoint(routePlan.request.origin, routePlan.request.originPoint, {
+    lat: 1,
+    lng: 1,
+  });
+  const destinationMapPoint = toMapPoint(
+    routePlan.request.destination,
+    routePlan.request.destinationPoint,
+    { lat: 2, lng: 2 }
+  );
+  const currentPosition = routePlan.request.originPoint
+    ? {
+        lat: routePlan.request.originPoint.lat,
+        lng: routePlan.request.originPoint.lng,
+      }
+    : { lat: 1.5, lng: 1.5 };
 
   return (
     <div className="w-full h-screen bg-[#F8F9FB] relative overflow-hidden">
@@ -72,9 +88,9 @@ export function EnRouteScreen({
       {/* Map with Current Position */}
       <div className="absolute inset-0 top-[165px]">
         <MapView
-          origin={{ lat: 1, lng: 1, name: routePlan.request.origin }}
-          destination={{ lat: 2, lng: 2, name: routePlan.request.destination }}
-          currentPosition={{ lat: 1.5, lng: 1.5 }}
+          origin={originMapPoint}
+          destination={destinationMapPoint}
+          currentPosition={currentPosition}
           showRoute
         />
       </div>
@@ -109,8 +125,8 @@ export function EnRouteScreen({
             <div className="h-full bg-gradient-to-r from-blue-600 to-blue-400 rounded-full" style={{ width: '35%' }} />
           </div>
           <div className="flex items-center justify-between mt-2 text-xs text-neutral-500">
-            <span>강남역</span>
-            <span>선릉역</span>
+            <span>{routePlan.request.origin}</span>
+            <span>{routePlan.request.destination}</span>
           </div>
         </div>
       </div>
@@ -309,4 +325,16 @@ export function EnRouteScreen({
       </BottomSheet>
     </div>
   );
+}
+
+function toMapPoint(
+  name: string,
+  point: RoutePoint | undefined,
+  fallback: { lat: number; lng: number }
+) {
+  return {
+    lat: point?.lat ?? fallback.lat,
+    lng: point?.lng ?? fallback.lng,
+    name: point?.name || name,
+  };
 }

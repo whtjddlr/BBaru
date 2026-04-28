@@ -8,6 +8,13 @@ export interface RoutePreferences {
   signalBufferMinutes: number;
 }
 
+export interface RoutePoint {
+  lat: number;
+  lng: number;
+  name?: string;
+  accuracyMeters?: number;
+}
+
 export interface RouteIntent {
   origin: string;
   destination: string;
@@ -16,6 +23,8 @@ export interface RouteIntent {
   naturalLanguage?: string;
   context?: string;
   preferences?: Partial<RoutePreferences>;
+  originPoint?: RoutePoint;
+  destinationPoint?: RoutePoint;
 }
 
 export interface NormalizedRouteIntent {
@@ -26,6 +35,8 @@ export interface NormalizedRouteIntent {
   naturalLanguage?: string;
   context?: string;
   preferences: RoutePreferences;
+  originPoint?: RoutePoint;
+  destinationPoint?: RoutePoint;
 }
 
 export interface RouteSegment {
@@ -121,6 +132,8 @@ export function normalizeRouteIntent(intent: Partial<RouteIntent>): NormalizedRo
     },
     naturalLanguage: intent.naturalLanguage,
     context: intent.context,
+    originPoint: normalizeRoutePoint(intent.originPoint),
+    destinationPoint: normalizeRoutePoint(intent.destinationPoint),
   };
 }
 
@@ -292,6 +305,25 @@ function buildExplanation(
 
 function cleanText(value?: string): string {
   return value?.trim().replace(/\s+/g, " ") ?? "";
+}
+
+function normalizeRoutePoint(point?: Partial<RoutePoint>): RoutePoint | undefined {
+  const lat = Number(point?.lat);
+  const lng = Number(point?.lng);
+  const accuracyMeters = Number(point?.accuracyMeters);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return undefined;
+  }
+
+  return {
+    lat,
+    lng,
+    name: cleanText(point?.name),
+    accuracyMeters: Number.isFinite(accuracyMeters)
+      ? Math.max(0, Math.round(accuracyMeters))
+      : undefined,
+  };
 }
 
 function isTime(value?: string): value is string {

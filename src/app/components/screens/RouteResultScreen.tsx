@@ -9,6 +9,7 @@ import {
   createDefaultRouteIntent,
   formatArrivalDelta,
   getStatusVariant,
+  type RoutePoint,
   type RoutePlan,
 } from "../../domain/eta";
 
@@ -28,6 +29,15 @@ export function RouteResultScreen({
   const boardingWait = routePlan.segments.find((segment) => segment.id === "boarding-wait");
   const mainRide = routePlan.segments.find((segment) => segment.id === "main-ride");
   const finalWalk = routePlan.segments.find((segment) => segment.id === "destination-walk");
+  const originMapPoint = toMapPoint(routePlan.request.origin, routePlan.request.originPoint, {
+    lat: 1,
+    lng: 1,
+  });
+  const destinationMapPoint = toMapPoint(
+    routePlan.request.destination,
+    routePlan.request.destinationPoint,
+    { lat: 2, lng: 2 }
+  );
 
   return (
     <div className="w-full h-screen bg-[#F8F9FB] relative overflow-hidden">
@@ -61,8 +71,8 @@ export function RouteResultScreen({
       {/* Map with Route */}
       <div className="absolute inset-0 top-[100px]">
         <MapView
-          origin={{ lat: 1, lng: 1, name: routePlan.request.origin }}
-          destination={{ lat: 2, lng: 2, name: routePlan.request.destination }}
+          origin={originMapPoint}
+          destination={destinationMapPoint}
           showRoute
         />
       </div>
@@ -367,4 +377,16 @@ export function RouteResultScreen({
       </BottomSheet>
     </div>
   );
+}
+
+function toMapPoint(
+  name: string,
+  point: RoutePoint | undefined,
+  fallback: { lat: number; lng: number }
+) {
+  return {
+    lat: point?.lat ?? fallback.lat,
+    lng: point?.lng ?? fallback.lng,
+    name: point?.name || name,
+  };
 }

@@ -2,12 +2,14 @@ import { type FormEvent, useState } from "react";
 import {
   AlertCircle,
   Clock,
+  Loader2,
+  LocateFixed,
   MapPin,
   Navigation2,
   Search,
   TrendingUp,
 } from "lucide-react";
-import { type RouteIntent } from "../../domain/eta";
+import { type RouteIntent, type RoutePoint } from "../../domain/eta";
 
 interface MainScreenProps {
   onRouteSearch: (intent: RouteIntent) => void;
@@ -37,6 +39,8 @@ const recentRoutes: RouteIntent[] = [
 export function MainScreen({ onRouteSearch }: MainScreenProps) {
   const [origin, setOrigin] = useState("강남역 2번 출구");
   const [destination, setDestination] = useState("선릉역");
+  const [originPoint, setOriginPoint] = useState<RoutePoint | undefined>();
+  const [isLocating, setIsLocating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -56,7 +60,42 @@ export function MainScreen({ onRouteSearch }: MainScreenProps) {
       destination: trimmedDestination,
       targetArrivalTime: getDefaultArrivalTime(),
       strategy: "balanced",
+      originPoint: originPoint ? { ...originPoint, name: trimmedOrigin } : undefined,
     });
+  };
+
+  const handleUseCurrentLocation = () => {
+    setError(null);
+
+    if (!navigator.geolocation) {
+      setError("이 브라우저는 현재 위치를 지원하지 않아요.");
+      return;
+    }
+
+    setIsLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const nextOriginPoint: RoutePoint = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+          name: "현재 위치",
+          accuracyMeters: position.coords.accuracy,
+        };
+
+        setOrigin("현재 위치");
+        setOriginPoint(nextOriginPoint);
+        setIsLocating(false);
+      },
+      (locationError) => {
+        setError(getLocationErrorMessage(locationError));
+        setIsLocating(false);
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 30_000,
+        timeout: 10_000,
+      }
+    );
   };
 
   return (
@@ -95,12 +134,40 @@ export function MainScreen({ onRouteSearch }: MainScreenProps) {
             <input
               type="text"
               value={origin}
-              onChange={(event) => setOrigin(event.target.value)}
+              onChange={(event) => {
+                setOrigin(event.target.value);
+                setOriginPoint(undefined);
+              }}
               placeholder="출발지를 입력하세요"
               className="flex-1 bg-transparent outline-none text-neutral-900"
             />
-            <MapPin className="w-5 h-5 text-neutral-400" />
+            <button
+              type="button"
+              onClick={handleUseCurrentLocation}
+              disabled={isLocating}
+              aria-label="현재 위치 사용"
+              title="현재 위치 사용"
+              className="w-9 h-9 rounded-lg border border-blue-100 bg-blue-50 text-blue-600 flex items-center justify-center hover:bg-blue-100 disabled:opacity-60 transition-colors"
+            >
+              {isLocating ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <LocateFixed className="w-4 h-4" />
+              )}
+            </button>
           </div>
+
+          {originPoint && (
+            <div className="flex items-center gap-2 text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-xl px-3 py-2">
+              <MapPin className="w-4 h-4" />
+              <span>
+                현재 위치 사용 중
+                {originPoint.accuracyMeters
+                  ? ` · 정확도 약 ${originPoint.accuracyMeters}m`
+                  : ""}
+              </span>
+            </div>
+          )}
 
           {/* Destination Input */}
           <div className="flex items-center gap-3 bg-white rounded-xl px-4 py-3 shadow-sm border border-neutral-200">
@@ -231,4 +298,20 @@ function getDefaultArrivalTime(): string {
   return `${String(now.getHours()).padStart(2, "0")}:${String(
     now.getMinutes()
   ).padStart(2, "0")}`;
+}
+
+function getLocationErrorMessage(error: GeolocationPositionError): string {
+  if (error.code === error.PERMISSION_DENIED) {
+    return "위치 권한이 거부됐어요. 브라우저 권한을 허용하거나 출발지를 직접 입력해 주세요.";
+  }
+
+  if (error.code === error.POSITION_UNAVAILABLE) {
+    return "현재 위치를 가져오지 못했어요. 잠시 후 다시 시도해 주세요.";
+  }
+
+  if (error.code === error.TIMEOUT) {
+    return "현재 위치 확인 시간이 초과됐어요. 다시 시도해 주세요.";
+  }
+
+  return "현재 위치를 사용할 수 없어요. 출발지를 직접 입력해 주세요.";
 }
