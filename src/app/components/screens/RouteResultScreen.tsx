@@ -4,8 +4,31 @@ import { BottomSheet } from "../BottomSheet";
 import { StatusBadge } from "../StatusBadge";
 import { ActionCard } from "../ActionCard";
 import { TimeDisplay } from "../TimeDisplay";
+import {
+  buildRoutePlan,
+  createDefaultRouteIntent,
+  formatArrivalDelta,
+  getStatusVariant,
+  type RoutePlan,
+} from "../../domain/eta";
 
-export function RouteResultScreen() {
+interface RouteResultScreenProps {
+  routePlan?: RoutePlan;
+  onBack?: () => void;
+  onStartNavigation?: () => void;
+}
+
+export function RouteResultScreen({
+  routePlan = buildRoutePlan(createDefaultRouteIntent()),
+  onBack,
+  onStartNavigation,
+}: RouteResultScreenProps) {
+  const firstWalk = routePlan.segments.find((segment) => segment.id === "origin-walk");
+  const signalWait = routePlan.segments.find((segment) => segment.id === "signal-wait");
+  const boardingWait = routePlan.segments.find((segment) => segment.id === "boarding-wait");
+  const mainRide = routePlan.segments.find((segment) => segment.id === "main-ride");
+  const finalWalk = routePlan.segments.find((segment) => segment.id === "destination-walk");
+
   return (
     <div className="w-full h-screen bg-[#F8F9FB] relative overflow-hidden">
       {/* Status Bar */}
@@ -21,12 +44,16 @@ export function RouteResultScreen() {
       {/* Header */}
       <div className="absolute top-11 left-0 right-0 bg-white/95 backdrop-blur-sm border-b border-neutral-200 z-30">
         <div className="px-5 py-3 flex items-center gap-3">
-          <button className="p-2 -ml-2 hover:bg-neutral-100 rounded-lg transition-colors">
+          <button onClick={onBack} className="p-2 -ml-2 hover:bg-neutral-100 rounded-lg transition-colors">
             <ArrowLeft className="w-5 h-5 text-neutral-900" />
           </button>
           <div className="flex-1">
-            <div className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>강남역 → 선릉역</div>
-            <div className="text-xs text-neutral-500">목표 도착: 10:00</div>
+            <div className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>
+              {routePlan.request.origin} → {routePlan.request.destination}
+            </div>
+            <div className="text-xs text-neutral-500">
+              목표 도착: {routePlan.summary.targetArrivalTime}
+            </div>
           </div>
         </div>
       </div>
@@ -34,8 +61,8 @@ export function RouteResultScreen() {
       {/* Map with Route */}
       <div className="absolute inset-0 top-[100px]">
         <MapView
-          origin={{ lat: 1, lng: 1, name: "강남역 2번 출구" }}
-          destination={{ lat: 2, lng: 2, name: "선릉역" }}
+          origin={{ lat: 1, lng: 1, name: routePlan.request.origin }}
+          destination={{ lat: 2, lng: 2, name: routePlan.request.destination }}
           showRoute
         />
       </div>
@@ -48,13 +75,19 @@ export function RouteResultScreen() {
               <Clock className="w-5 h-5 text-blue-600" />
               <span className="text-neutral-900" style={{ fontWeight: 600 }}>도착 예상</span>
             </div>
-            <StatusBadge variant="early">3분 일찍 도착</StatusBadge>
+            <StatusBadge variant={routePlan.summary.statusVariant}>
+              {routePlan.summary.arrivalDeltaLabel}
+            </StatusBadge>
           </div>
 
           <div className="grid grid-cols-3 gap-4 mb-4">
-            <TimeDisplay label="목표 도착" time="10:00" />
-            <TimeDisplay label="예상 도착" time="09:57" subtext="3분 빠름" />
-            <TimeDisplay label="총 소요" time="28분" />
+            <TimeDisplay label="목표 도착" time={routePlan.summary.targetArrivalTime} />
+            <TimeDisplay
+              label="예상 도착"
+              time={routePlan.summary.expectedArrivalTime}
+              subtext={routePlan.summary.arrivalDeltaLabel}
+            />
+            <TimeDisplay label="총 소요" time={`${routePlan.summary.totalDurationMinutes}분`} />
           </div>
 
           <div className="h-px bg-neutral-200 my-4" />
@@ -62,11 +95,15 @@ export function RouteResultScreen() {
           <div className="flex items-center justify-between">
             <div>
               <div className="text-xs text-neutral-500 mb-1">권장 출발 시각</div>
-              <div className="text-xl text-blue-600 tabular-nums" style={{ fontWeight: 700 }}>09:32</div>
+              <div className="text-xl text-blue-600 tabular-nums" style={{ fontWeight: 700 }}>
+                {routePlan.summary.recommendedDepartureTime}
+              </div>
             </div>
             <div className="flex items-center gap-2 px-4 py-2 bg-blue-50 rounded-xl">
               <Timer className="w-4 h-4 text-blue-600" />
-              <span className="text-sm text-blue-600" style={{ fontWeight: 600 }}>지금 출발 가능</span>
+              <span className="text-sm text-blue-600" style={{ fontWeight: 600 }}>
+                {routePlan.request.strategy === "ontime" ? "정시 우선" : "버퍼 포함"}
+              </span>
             </div>
           </div>
         </div>
@@ -80,9 +117,9 @@ export function RouteResultScreen() {
             <h3 className="text-neutral-900 mb-3" style={{ fontWeight: 600 }}>출발 가이드</h3>
             <ActionCard
               icon={Play}
-              title="지금 출발하세요"
-              description="현재 시각에 출발하면 목표 시각에 가장 가깝게 도착합니다"
-              variant="primary"
+              title={routePlan.action.title}
+              description={routePlan.action.description}
+              variant={routePlan.action.tone}
             />
           </div>
 
@@ -90,18 +127,30 @@ export function RouteResultScreen() {
           <div>
             <h3 className="text-neutral-900 mb-3" style={{ fontWeight: 600 }}>도착 최적화 모드</h3>
             <div className="grid grid-cols-3 gap-2">
-              <button className="p-3 border-2 border-neutral-200 rounded-xl bg-white hover:border-blue-300 transition-colors">
-                <div className="text-sm mb-1" style={{ fontWeight: 600 }}>안전 우선</div>
-                <div className="text-xs text-neutral-500">09:55 도착</div>
-              </button>
-              <button className="p-3 border-2 border-blue-600 bg-blue-50 rounded-xl">
-                <div className="text-sm text-blue-600 mb-1" style={{ fontWeight: 600 }}>균형</div>
-                <div className="text-xs text-blue-600">09:57 도착</div>
-              </button>
-              <button className="p-3 border-2 border-neutral-200 rounded-xl bg-white hover:border-blue-300 transition-colors">
-                <div className="text-sm mb-1" style={{ fontWeight: 600 }}>정시 우선</div>
-                <div className="text-xs text-neutral-500">10:00 도착</div>
-              </button>
+              {routePlan.strategies.map((strategy) => {
+                const isSelected = strategy.strategy === routePlan.request.strategy;
+
+                return (
+                  <button
+                    key={strategy.strategy}
+                    className={`p-3 border-2 rounded-xl transition-colors ${
+                      isSelected
+                        ? "border-blue-600 bg-blue-50"
+                        : "border-neutral-200 bg-white hover:border-blue-300"
+                    }`}
+                  >
+                    <div
+                      className={`text-sm mb-1 ${isSelected ? "text-blue-600" : ""}`}
+                      style={{ fontWeight: 600 }}
+                    >
+                      {strategy.label}
+                    </div>
+                    <div className={`text-xs ${isSelected ? "text-blue-600" : "text-neutral-500"}`}>
+                      {strategy.expectedArrivalTime} 도착
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -119,8 +168,12 @@ export function RouteResultScreen() {
                     <div className="w-1 h-12 bg-gradient-to-b from-blue-200 to-neutral-200" />
                   </div>
                   <div className="flex-1 py-2">
-                    <div className="text-base text-neutral-900 mb-1" style={{ fontWeight: 600 }}>강남역 2번 출구</div>
-                    <div className="text-xs text-neutral-500">09:32 출발</div>
+                    <div className="text-base text-neutral-900 mb-1" style={{ fontWeight: 600 }}>
+                      {routePlan.request.origin}
+                    </div>
+                    <div className="text-xs text-neutral-500">
+                      {routePlan.summary.recommendedDepartureTime} 출발
+                    </div>
                   </div>
                 </div>
 
@@ -136,10 +189,16 @@ export function RouteResultScreen() {
                   </div>
                   <div className="flex-1 py-2">
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>도보 이동</span>
-                      <span className="px-2.5 py-1 bg-blue-50 text-blue-700 rounded-full text-xs" style={{ fontWeight: 600 }}>3분</span>
+                      <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>
+                        {firstWalk?.label ?? "도보 이동"}
+                      </span>
+                      <span className="px-2.5 py-1 bg-blue-50 text-blue-700 rounded-full text-xs" style={{ fontWeight: 600 }}>
+                        {firstWalk?.durationMinutes ?? 0}분
+                      </span>
                     </div>
-                    <div className="text-xs text-neutral-500 mb-1">승강장까지 250m</div>
+                    <div className="text-xs text-neutral-500 mb-1">
+                      {firstWalk?.distanceMeters ?? 250}m
+                    </div>
                     <div className="h-1 bg-neutral-100 rounded-full overflow-hidden">
                       <div className="h-full bg-blue-400 rounded-full" style={{ width: '25%' }} />
                     </div>
@@ -159,7 +218,9 @@ export function RouteResultScreen() {
                   <div className="flex-1 py-2">
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>횡단보도 대기</span>
-                      <span className="px-2.5 py-1 bg-amber-50 text-amber-700 rounded-full text-xs" style={{ fontWeight: 600 }}>45초</span>
+                      <span className="px-2.5 py-1 bg-amber-50 text-amber-700 rounded-full text-xs" style={{ fontWeight: 600 }}>
+                        {signalWait?.durationMinutes ?? 1}분
+                      </span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
@@ -178,13 +239,21 @@ export function RouteResultScreen() {
                   </div>
                   <div className="flex-1 py-2">
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>2호선 탑승</span>
-                      <span className="px-2.5 py-1 bg-green-50 text-green-700 rounded-full text-xs" style={{ fontWeight: 600 }}>4분</span>
+                      <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>
+                        {mainRide?.label ?? "주 이동 구간"}
+                      </span>
+                      <span className="px-2.5 py-1 bg-green-50 text-green-700 rounded-full text-xs" style={{ fontWeight: 600 }}>
+                        {mainRide?.durationMinutes ?? 0}분
+                      </span>
                     </div>
-                    <div className="text-xs text-neutral-500 mb-2">강남 → 선릉 (1개 역)</div>
+                    <div className="text-xs text-neutral-500 mb-2">
+                      {mainRide?.detail ?? routePlan.request.destination}
+                    </div>
                     <div className="flex items-center gap-2">
-                      <div className="px-2 py-1 bg-green-600 text-white rounded text-xs" style={{ fontWeight: 600 }}>09:35 열차</div>
-                      <span className="text-xs text-neutral-500">3분 후 도착</span>
+                      <div className="px-2 py-1 bg-green-600 text-white rounded text-xs" style={{ fontWeight: 600 }}>
+                        {boardingWait?.durationMinutes ?? 3}분 대기
+                      </div>
+                      <span className="text-xs text-neutral-500">다음 교통수단 기준</span>
                     </div>
                   </div>
                 </div>
@@ -202,9 +271,13 @@ export function RouteResultScreen() {
                   <div className="flex-1 py-2">
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>하차 후 도보</span>
-                      <span className="px-2.5 py-1 bg-blue-50 text-blue-700 rounded-full text-xs" style={{ fontWeight: 600 }}>2분</span>
+                      <span className="px-2.5 py-1 bg-blue-50 text-blue-700 rounded-full text-xs" style={{ fontWeight: 600 }}>
+                        {finalWalk?.durationMinutes ?? 0}분
+                      </span>
                     </div>
-                    <div className="text-xs text-neutral-500">3번 출구로 120m</div>
+                    <div className="text-xs text-neutral-500">
+                      {finalWalk?.distanceMeters ?? 120}m
+                    </div>
                   </div>
                 </div>
 
@@ -214,10 +287,16 @@ export function RouteResultScreen() {
                     <div className="w-4 h-4 rounded-full bg-red-600 border-4 border-red-100" />
                   </div>
                   <div className="flex-1 py-2">
-                    <div className="text-base text-neutral-900 mb-1" style={{ fontWeight: 600 }}>선릉역 도착</div>
+                    <div className="text-base text-neutral-900 mb-1" style={{ fontWeight: 600 }}>
+                      {routePlan.request.destination} 도착
+                    </div>
                     <div className="flex items-center gap-2">
-                      <div className="text-lg text-blue-600 tabular-nums" style={{ fontWeight: 700 }}>09:57</div>
-                      <span className="text-xs text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full" style={{ fontWeight: 600 }}>목표보다 3분 빠름</span>
+                      <div className="text-lg text-blue-600 tabular-nums" style={{ fontWeight: 700 }}>
+                        {routePlan.summary.expectedArrivalTime}
+                      </div>
+                      <span className="text-xs text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full" style={{ fontWeight: 600 }}>
+                        {routePlan.summary.arrivalDeltaLabel}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -228,15 +307,21 @@ export function RouteResultScreen() {
             <div className="grid grid-cols-3 gap-2 mt-3">
               <div className="bg-blue-50 rounded-xl p-3 text-center border border-blue-100">
                 <div className="text-xs text-blue-600 mb-1">도보</div>
-                <div className="text-lg text-blue-900 tabular-nums" style={{ fontWeight: 700 }}>5분</div>
+                <div className="text-lg text-blue-900 tabular-nums" style={{ fontWeight: 700 }}>
+                  {(firstWalk?.durationMinutes ?? 0) + (finalWalk?.durationMinutes ?? 0)}분
+                </div>
               </div>
               <div className="bg-amber-50 rounded-xl p-3 text-center border border-amber-100">
                 <div className="text-xs text-amber-600 mb-1">대기</div>
-                <div className="text-lg text-amber-900 tabular-nums" style={{ fontWeight: 700 }}>45초</div>
+                <div className="text-lg text-amber-900 tabular-nums" style={{ fontWeight: 700 }}>
+                  {(signalWait?.durationMinutes ?? 0) + (boardingWait?.durationMinutes ?? 0)}분
+                </div>
               </div>
               <div className="bg-green-50 rounded-xl p-3 text-center border border-green-100">
                 <div className="text-xs text-green-600 mb-1">탑승</div>
-                <div className="text-lg text-green-900 tabular-nums" style={{ fontWeight: 700 }}>4분</div>
+                <div className="text-lg text-green-900 tabular-nums" style={{ fontWeight: 700 }}>
+                  {mainRide?.durationMinutes ?? 0}분
+                </div>
               </div>
             </div>
           </div>
@@ -245,31 +330,37 @@ export function RouteResultScreen() {
           <div>
             <h3 className="text-neutral-900 mb-3" style={{ fontWeight: 600 }}>다른 경로</h3>
             <div className="space-y-2">
-              <button className="w-full p-4 bg-neutral-50 rounded-xl hover:bg-neutral-100 transition-colors">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>버스 + 도보</span>
-                  <StatusBadge variant="late" size="sm">1분 늦음</StatusBadge>
-                </div>
-                <div className="flex items-center justify-between text-xs text-neutral-500">
-                  <span>3412번 버스 이용</span>
-                  <span>32분 소요</span>
-                </div>
-              </button>
-              <button className="w-full p-4 bg-neutral-50 rounded-xl hover:bg-neutral-100 transition-colors">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>도보 전체</span>
-                  <StatusBadge variant="late" size="sm">15분 늦음</StatusBadge>
-                </div>
-                <div className="flex items-center justify-between text-xs text-neutral-500">
-                  <span>직선 거리 2.1km</span>
-                  <span>43분 소요</span>
-                </div>
-              </button>
+              {routePlan.alternatives.map((alternative) => (
+                <button
+                  key={alternative.label}
+                  className="w-full p-4 bg-neutral-50 rounded-xl hover:bg-neutral-100 transition-colors"
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>
+                      {alternative.label}
+                    </span>
+                    <StatusBadge
+                      variant={getStatusVariant(alternative.arrivalDeltaMinutes)}
+                      size="sm"
+                    >
+                      {formatArrivalDelta(alternative.arrivalDeltaMinutes)}
+                    </StatusBadge>
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-neutral-500">
+                    <span>{alternative.detail}</span>
+                    <span>{alternative.durationMinutes}분 소요</span>
+                  </div>
+                </button>
+              ))}
             </div>
           </div>
 
           {/* Start Navigation Button */}
-          <button className="w-full bg-blue-600 text-white rounded-xl py-4 mt-2" style={{ fontWeight: 600 }}>
+          <button
+            onClick={onStartNavigation}
+            className="w-full bg-blue-600 text-white rounded-xl py-4 mt-2"
+            style={{ fontWeight: 600 }}
+          >
             안내 시작
           </button>
         </div>

@@ -14,7 +14,7 @@
 | 형태 | 모바일 앱 UX 기반 웹 프로토타입 |
 | 한 줄 소개 | 목표 도착 시각에 가장 가깝게 도착하도록 돕는 초개인화 ETA 서비스 |
 | 핵심 가치 | 권장 출발 시각 추천, 행동 중심 UX, 이동 중 ETA 재계산 |
-| 기술 스택 | React, Vite, Tmap JavaScript API, Vercel |
+| 기술 스택 | React, Vite, Naver Maps JavaScript API, ODsay API, Vercel |
 
 ## 프로젝트 소개
 
@@ -92,9 +92,42 @@ flowchart LR
 ## 기술 스택
 
 - **Frontend**: React, Vite
-- **Map / Mobility**: Tmap JavaScript API
+- **Map Display**: Naver Maps JavaScript API
+- **Mobility Routing**: ODsay 대중교통 길찾기 API
 - **Deployment**: Vercel
 - **UI Direction**: Mobile-first web prototype, action-driven UX
+
+## Solar AI 확장 구조
+
+BBARU는 계산 결과를 모델이 직접 만들지 않고, Solar가 사용자의 자연어 요청을 구조화한 뒤 기존 ETA 계산 로직이 최종 시간을 산출하는 방향으로 확장합니다.
+
+```mermaid
+flowchart LR
+    A["자연어 이동 요청"] --> B["Solar: 출발지, 도착지, 목표 시각, 전략 추출"]
+    B --> C["검증 및 기본값 보정"]
+    C --> D["BBARU ETA 계산 로직"]
+    D --> E["출발 시각, 예상 도착, 행동 카드"]
+```
+
+- `src/app/domain/eta.ts`: 목표 도착 시각, 전략, 보행 성향을 받아 권장 출발 시각과 예상 도착 시각을 계산합니다.
+- `src/app/services/ai/routeAssistant.ts`: 프론트에서 Solar 서버리스 함수 호출을 시도하고, 실패 시 로컬 파서로 시연 흐름을 유지합니다.
+- `api/ai/route-intent.js`: `UPSTAGE_API_KEY`를 서버 환경 변수로 받아 Solar Chat API를 호출합니다.
+- `src/app/components/MapView.tsx`: `VITE_NAVER_MAP_KEY_ID` 또는 `VITE_NAVER_MAP_CLIENT_ID`가 있으면 네이버 지도를 표시하고, 없으면 목업 지도를 fallback으로 보여줍니다.
+- `api/maps/geocode.js`: 네이버 Maps Geocoding을 우선 사용하고, 권한이 없으면 네이버 Local Search로 장소 좌표 변환을 보조합니다.
+- `api/mobility/odsay-route.js`: `ODSAY_API_KEY`를 서버 환경 변수로 받아 ODsay 대중교통 길찾기 API를 호출합니다.
+
+### 환경 변수
+
+```bash
+UPSTAGE_API_KEY=your_upstage_api_key
+UPSTAGE_MODEL=solar-pro3
+UPSTAGE_API_BASE_URL=https://api.upstage.ai/v1
+ODSAY_API_KEY=your_odsay_api_key
+VITE_NAVER_MAP_KEY_ID=your_naver_maps_ncp_key_id
+VITE_NAVER_MAP_SUBMODULES=
+NAVER_SEARCH_CLIENT_ID=your_naver_search_client_id
+NAVER_SEARCH_CLIENT_SECRET=your_naver_search_client_secret
+```
 
 ## 공공데이터 활용
 
