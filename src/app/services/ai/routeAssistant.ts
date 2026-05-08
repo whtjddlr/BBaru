@@ -5,6 +5,7 @@ import {
   type RouteIntent,
   type WalkingPace,
 } from "../../domain/eta";
+import { createApiUrl } from "../apiBase";
 
 interface SolarRouteIntentResponse {
   intent?: Partial<RouteIntent>;
@@ -20,7 +21,7 @@ export async function interpretRouteRequest(text: string): Promise<RouteIntent> 
   }
 
   try {
-    const response = await fetch("/api/ai/route-intent", {
+    const response = await fetch(createApiUrl("/api/ai/route-intent"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

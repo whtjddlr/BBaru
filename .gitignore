@@ -4,3 +4,10 @@ dist
 .env
 .env.local
 .env.*.local
+.codex-*.png
+android/.gradle
+android/build
+android/app/build
+ios/App/build
+ios/App/Pods
+ios/DerivedData

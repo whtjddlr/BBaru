@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MapPin, Navigation } from "lucide-react";
+import { Loader2, LocateFixed, MapPin, Navigation } from "lucide-react";
+import {
+  DEFAULT_CENTER,
+  isKoreaCoordinate,
+  resolveDisplayPlacePoint,
+  type ResolvedPlacePoint,
+} from "../domain/places";
+import { createApiUrl } from "../services/apiBase";
 
 declare global {
   interface Window {
@@ -25,16 +32,39 @@ interface RoutePathPoint {
   lng: number;
 }
 
-interface OdsayRouteGeometryResponse {
+type RoutePathSegment = RoutePathPoint[];
+
+interface OdsaySearchPath {
+  info?: {
+    mapObj?: string;
+  };
+  subPath?: Array<Record<string, unknown>>;
+}
+
+interface OdsaySearchResponse {
+  result?: {
+    path?: OdsaySearchPath[];
+  };
   routeGeometry?: {
     source?: string;
     points?: RoutePathPoint[];
   };
+  code?: string;
+  error?: unknown;
+}
+
+interface OdsayLaneResponse {
   result?: {
-    path?: Array<{
-      subPath?: Array<Record<string, unknown>>;
+    lane?: Array<{
+      section?: Array<{
+        graphPos?: Array<{
+          x?: number | string;
+          y?: number | string;
+        }>;
+      }>;
     }>;
   };
+  error?: unknown;
 }
 
 interface MapViewProps {
@@ -45,9 +75,7 @@ interface MapViewProps {
   showRoute?: boolean;
 }
 
-interface ResolvedMapPoint extends MapPoint {
-  isApproximate?: boolean;
-}
+type ResolvedMapPoint = ResolvedPlacePoint;
 
 interface NaverMapCredential {
   parameter: "ncpKeyId" | "ncpClientId";
@@ -56,17 +84,8 @@ interface NaverMapCredential {
 
 const NAVER_MAP_SCRIPT_ID = "naver-map-sdk";
 const NAVER_MAP_CALLBACK = "__bbaruNaverMapReady";
-const DEFAULT_CENTER = { lat: 37.4979, lng: 127.0276 };
-const KNOWN_PLACE_COORDINATES: Array<{ keyword: string; lat: number; lng: number }> = [
-  { keyword: "강남역", lat: 37.4979, lng: 127.0276 },
-  { keyword: "선릉역", lat: 37.5045, lng: 127.0489 },
-  { keyword: "홍대입구역", lat: 37.5572, lng: 126.9254 },
-  { keyword: "합정역", lat: 37.5495, lng: 126.9139 },
-  { keyword: "서울역", lat: 37.5547, lng: 126.9706 },
-  { keyword: "광화문", lat: 37.5716, lng: 126.9769 },
-];
-
 let naverMapPromise: Promise<any> | null = null;
+let naverGeocoderPromise: Promise<any> | null = null;
 
 export function MapView({
   origin,
@@ -75,9 +94,9 @@ export function MapView({
   showRoute = false,
 }: MapViewProps) {
   const credential = useMemo(() => getNaverMapCredential(), []);
-  const submodules = import.meta.env.VITE_NAVER_MAP_SUBMODULES;
-  const resolvedOrigin = resolveMapPoint(origin);
-  const resolvedDestination = resolveMapPoint(destination);
+  const submodules = getMapDisplaySubmodules(import.meta.env.VITE_NAVER_MAP_SUBMODULES);
+  const resolvedOrigin = resolveDisplayPlacePoint(origin);
+  const resolvedDestination = resolveDisplayPlacePoint(destination);
   const resolvedCurrentPosition = resolveCurrentPosition(
     currentPosition,
     resolvedOrigin,
@@ -115,7 +134,7 @@ function useRoutePath(
   origin?: ResolvedMapPoint,
   destination?: ResolvedMapPoint
 ) {
-  const [routePath, setRoutePath] = useState<RoutePathPoint[] | undefined>();
+  const [routePath, setRoutePath] = useState<RoutePathSegment[] | null | undefined>();
 
   useEffect(() => {
     if (!showRoute || !origin || !destination) {
@@ -127,33 +146,17 @@ function useRoutePath(
 
     setRoutePath(undefined);
 
-    fetch("/api/mobility/odsay-route", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        origin: { lat: origin.lat, lng: origin.lng },
-        destination: { lat: destination.lat, lng: destination.lng },
-        searchPathType: 0,
-      }),
-      signal: controller.signal,
-    })
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`ODsay route failed: ${response.status}`);
-        }
-
-        return response.json() as Promise<OdsayRouteGeometryResponse>;
-      })
-      .then((payload) => {
+    fetchOdsayRoutePath(origin, destination, controller.signal)
+      .then((path) => {
         if (controller.signal.aborted) {
           return;
         }
 
-        setRoutePath(extractRoutePath(payload, origin, destination));
+        setRoutePath(path ?? null);
       })
       .catch(() => {
         if (!controller.signal.aborted) {
-          setRoutePath(undefined);
+          setRoutePath(null);
         }
       });
 
@@ -183,12 +186,17 @@ function NaverMap({
   origin?: ResolvedMapPoint;
   destination?: ResolvedMapPoint;
   currentPosition?: { lat: number; lng: number };
-  routePath?: RoutePathPoint[];
+  routePath?: RoutePathSegment[] | null;
   showRoute?: boolean;
 }) {
   const mapElementRef = useRef<HTMLDivElement>(null);
+  const mapInstanceRef = useRef<any>(null);
+  const [locatedPosition, setLocatedPosition] = useState<RoutePathPoint | undefined>();
   const [isMapReady, setIsMapReady] = useState(false);
   const [hasMapError, setHasMapError] = useState(false);
+  const [isLocating, setIsLocating] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
+  const displayCurrentPosition = currentPosition ?? locatedPosition;
 
   useEffect(() => {
     let isCancelled = false;
@@ -198,6 +206,10 @@ function NaverMap({
         if (isCancelled || !mapElementRef.current) {
           return;
         }
+
+        mapElementRef.current.replaceChildren();
+        setIsMapReady(false);
+        setHasMapError(false);
 
         const center = getMapCenter(origin, destination);
         const map = new naver.maps.Map(mapElementRef.current, {
@@ -209,6 +221,7 @@ function NaverMap({
           logoControl: true,
           zoomControl: false,
         });
+        mapInstanceRef.current = map;
 
         const bounds = new naver.maps.LatLngBounds();
 
@@ -235,25 +248,30 @@ function NaverMap({
         }
 
         if (showRoute && origin && destination) {
-          const displayRoutePath = getDisplayRoutePath(origin, destination, routePath);
+          const displayRouteSegments = getDisplayRouteSegments(origin, destination, routePath);
 
-          for (const point of displayRoutePath) {
-            bounds.extend(new naver.maps.LatLng(point.lat, point.lng));
+          for (const segment of displayRouteSegments) {
+            for (const point of segment) {
+              bounds.extend(new naver.maps.LatLng(point.lat, point.lng));
+            }
+
+            new naver.maps.Polyline({
+              map,
+              path: segment.map((point) => new naver.maps.LatLng(point.lat, point.lng)),
+              strokeColor: "#2563EB",
+              strokeOpacity: 0.9,
+              strokeWeight: 6,
+              strokeLineCap: "round",
+              strokeLineJoin: "round",
+            });
           }
-
-          new naver.maps.Polyline({
-            map,
-            path: displayRoutePath.map((point) => new naver.maps.LatLng(point.lat, point.lng)),
-            strokeColor: "#2563EB",
-            strokeOpacity: 0.9,
-            strokeWeight: 6,
-            strokeLineCap: "round",
-            strokeLineJoin: "round",
-          });
         }
 
-        if (currentPosition) {
-          const position = new naver.maps.LatLng(currentPosition.lat, currentPosition.lng);
+        if (displayCurrentPosition) {
+          const position = new naver.maps.LatLng(
+            displayCurrentPosition.lat,
+            displayCurrentPosition.lng
+          );
           bounds.extend(position);
           new naver.maps.Marker({
             map,
@@ -277,8 +295,74 @@ function NaverMap({
 
     return () => {
       isCancelled = true;
+      mapElementRef.current?.replaceChildren();
+      mapInstanceRef.current = null;
     };
-  }, [credential, currentPosition, destination, origin, routePath, showRoute, submodules]);
+  }, [
+    credential,
+    destination,
+    displayCurrentPosition?.lat,
+    displayCurrentPosition?.lng,
+    origin,
+    routePath,
+    showRoute,
+    submodules,
+  ]);
+
+  const handleMoveToCurrentLocation = () => {
+    setLocationError(null);
+
+    if (displayCurrentPosition) {
+      focusMapPosition(displayCurrentPosition);
+      return;
+    }
+
+    if (!navigator.geolocation) {
+      setLocationError("위치 사용 불가");
+      return;
+    }
+
+    setIsLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const nextPosition = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+        };
+
+        setIsLocating(false);
+
+        if (!isKoreaCoordinate({ ...nextPosition, name: "현재 위치" })) {
+          setLocationError("위치 범위 오류");
+          return;
+        }
+
+        setLocatedPosition(nextPosition);
+        focusMapPosition(nextPosition);
+      },
+      () => {
+        setIsLocating(false);
+        setLocationError("위치 확인 실패");
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 10_000,
+        timeout: 10_000,
+      }
+    );
+  };
+
+  const focusMapPosition = (position: RoutePathPoint) => {
+    if (!window.naver?.maps || !mapInstanceRef.current) {
+      return;
+    }
+
+    const latLng = new window.naver.maps.LatLng(position.lat, position.lng);
+    const currentZoom = mapInstanceRef.current.getZoom?.() ?? 14;
+
+    mapInstanceRef.current.panTo(latLng);
+    mapInstanceRef.current.setZoom(Math.max(currentZoom, 16));
+  };
 
   if (hasMapError) {
     return (
@@ -295,6 +379,25 @@ function NaverMap({
   return (
     <div className="relative w-full h-full bg-[#E8EDF3] overflow-hidden">
       <div ref={mapElementRef} className="w-full h-full" />
+      <button
+        type="button"
+        onClick={handleMoveToCurrentLocation}
+        disabled={isLocating}
+        aria-label="현재 위치로 이동"
+        title="현재 위치로 이동"
+        className="absolute right-4 top-[211px] z-20 w-11 h-11 rounded-full bg-white border border-neutral-200 shadow-lg text-blue-600 flex items-center justify-center hover:bg-blue-50 active:scale-95 disabled:opacity-70 transition"
+      >
+        {isLocating ? (
+          <Loader2 className="w-5 h-5 animate-spin" />
+        ) : (
+          <LocateFixed className="w-5 h-5" />
+        )}
+      </button>
+      {locationError && (
+        <div className="absolute right-4 top-[266px] z-20 rounded-full bg-white px-3 py-1.5 text-[11px] text-red-600 shadow-md border border-red-100">
+          {locationError}
+        </div>
+      )}
       {!isMapReady && (
         <div className="absolute inset-0 bg-[#E8EDF3] flex items-center justify-center">
           <div className="bg-white px-4 py-2 rounded-full border border-neutral-200 text-sm text-neutral-600 shadow-sm">
@@ -306,32 +409,184 @@ function NaverMap({
   );
 }
 
-function extractRoutePath(
-  payload: OdsayRouteGeometryResponse,
+async function fetchOdsayRoutePath(
   origin: RoutePathPoint,
-  destination: RoutePathPoint
+  destination: RoutePathPoint,
+  signal: AbortSignal
 ) {
-  const geometryPoints = Array.isArray(payload.routeGeometry?.points)
-    ? payload.routeGeometry.points
-    : [];
-  const routePath = normalizeRoutePath([origin, ...geometryPoints, destination]);
+  const browserPayload = await fetchOdsayRoutePathFromBrowser(origin, destination, signal);
+  const browserSegments = await extractRealRouteSegments(browserPayload, signal);
 
-  if (routePath.length > 2) {
-    return routePath;
+  if (browserSegments?.length) {
+    return connectRouteSegmentsToEndpoints(origin, destination, browserSegments);
   }
 
-  const subPathPoints = extractSubPathRoutePoints(payload);
-  const fallbackPath = normalizeRoutePath([origin, ...subPathPoints, destination]);
+  const response = await fetch(createApiUrl("/api/mobility/odsay-route"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      origin,
+      destination,
+      searchPathType: "0",
+    }),
+    signal,
+  });
+  const payload = (await response.json()) as OdsaySearchResponse;
 
-  return fallbackPath.length > 2 ? fallbackPath : undefined;
+  if (!response.ok || payload.code || hasOdsayError(payload)) {
+    throw new Error("ODsay route search failed");
+  }
+
+  const geometryPoints =
+    payload.routeGeometry?.source !== "estimated-fallback"
+      ? normalizeRoutePath(payload.routeGeometry?.points ?? [])
+      : [];
+
+  if (geometryPoints.length > 1) {
+    return [geometryPoints];
+  }
+
+  const serverSegments = await extractRealRouteSegments(payload, signal);
+
+  return serverSegments?.length
+    ? connectRouteSegmentsToEndpoints(origin, destination, serverSegments)
+    : undefined;
 }
 
-function extractSubPathRoutePoints(payload: OdsayRouteGeometryResponse) {
+async function fetchOdsayRoutePathFromBrowser(
+  origin: RoutePathPoint,
+  destination: RoutePathPoint,
+  signal: AbortSignal
+): Promise<OdsaySearchResponse | undefined> {
+  const apiKey = getOdsayWebKey();
+
+  if (!apiKey) {
+    return undefined;
+  }
+
+  try {
+    const url = new URL("https://api.odsay.com/v1/api/searchPubTransPathT");
+    url.searchParams.set("SX", String(origin.lng));
+    url.searchParams.set("SY", String(origin.lat));
+    url.searchParams.set("EX", String(destination.lng));
+    url.searchParams.set("EY", String(destination.lat));
+    url.searchParams.set("SearchPathType", "0");
+    url.searchParams.set("apiKey", apiKey);
+
+    const response = await fetch(url, { signal });
+    const payload = (await response.json()) as OdsaySearchResponse;
+
+    if (!response.ok || hasOdsayError(payload)) {
+      return undefined;
+    }
+
+    return payload;
+  } catch {
+    return undefined;
+  }
+}
+
+async function extractRealRouteSegments(
+  payload: OdsaySearchResponse | undefined,
+  signal: AbortSignal
+) {
+  if (!payload || hasOdsayError(payload)) {
+    return undefined;
+  }
+
+  const firstPath = payload.result?.path?.[0];
+
+  if (!firstPath) {
+    return undefined;
+  }
+
+  const laneSegments = await fetchLaneRouteSegments(firstPath.info?.mapObj, signal);
+
+  return laneSegments.length ? laneSegments : extractRouteSegments(payload);
+}
+
+async function fetchLaneRouteSegments(mapObj: string | undefined, signal: AbortSignal) {
+  const apiKey = getOdsayWebKey();
+
+  if (!apiKey || !mapObj) {
+    return [];
+  }
+
+  try {
+    const url = new URL("https://api.odsay.com/v1/api/loadLane");
+    url.searchParams.set("mapObject", normalizeMapObject(mapObj));
+    url.searchParams.set("apiKey", apiKey);
+
+    const response = await fetch(url, { signal });
+    const payload = (await response.json()) as OdsayLaneResponse;
+
+    if (!response.ok || hasOdsayError(payload)) {
+      return [];
+    }
+
+    return extractLaneRouteSegments(payload);
+  } catch {
+    return [];
+  }
+}
+
+function getOdsayWebKey() {
+  return (
+    import.meta.env.VITE_ODSAY_API_KEY?.trim() ||
+    import.meta.env.ODSAY_API_KEY?.trim() ||
+    ""
+  );
+}
+
+function normalizeMapObject(mapObj: string) {
+  return mapObj.includes("@") ? mapObj : `0:0@${mapObj}`;
+}
+
+function hasOdsayError(payload: { error?: unknown }) {
+  return Array.isArray(payload.error) ? payload.error.length > 0 : Boolean(payload.error);
+}
+
+function extractLaneRouteSegments(payload: OdsayLaneResponse) {
+  const lanes = Array.isArray(payload.result?.lane) ? payload.result.lane : [];
+  const segments: RoutePathSegment[] = [];
+
+  for (const lane of lanes) {
+    const sections = Array.isArray(lane.section) ? lane.section : [];
+
+    for (const section of sections) {
+      const graphPositions = Array.isArray(section.graphPos) ? section.graphPos : [];
+      const points: RoutePathPoint[] = [];
+
+      for (const position of graphPositions) {
+        pushRoutePoint(points, {
+          lat: toNumber(position.y),
+          lng: toNumber(position.x),
+        });
+      }
+
+      if (points.length > 1) {
+        segments.push(points);
+      }
+    }
+  }
+
+  return segments;
+}
+
+function extractRouteSegments(payload: OdsaySearchResponse) {
+  const subPathSegments = extractSubPathRouteSegments(payload);
+
+  return subPathSegments.length > 0 ? subPathSegments : undefined;
+}
+
+function extractSubPathRouteSegments(payload: OdsaySearchResponse) {
   const firstPath = payload.result?.path?.[0];
   const subPaths = Array.isArray(firstPath?.subPath) ? firstPath.subPath : [];
-  const points: RoutePathPoint[] = [];
+  const segments: RoutePathSegment[] = [];
 
   for (const subPath of subPaths) {
+    const points: RoutePathPoint[] = [];
+
     pushRoutePoint(points, {
       lat: toNumber(subPath.startY),
       lng: toNumber(subPath.startX),
@@ -352,23 +607,59 @@ function extractSubPathRoutePoints(payload: OdsayRouteGeometryResponse) {
       lat: toNumber(subPath.endY),
       lng: toNumber(subPath.endX),
     });
+
+    if (points.length > 1) {
+      segments.push(points);
+    }
   }
 
-  return points;
+  return segments;
 }
 
-function getDisplayRoutePath(
+function getDisplayRouteSegments(
   origin: RoutePathPoint,
   destination: RoutePathPoint,
-  routePath?: RoutePathPoint[]
+  routePath?: RoutePathSegment[] | null
 ) {
-  const normalizedRoutePath = normalizeRoutePath(routePath ?? []);
-
-  if (normalizedRoutePath.length > 2) {
-    return normalizedRoutePath;
+  if (routePath === undefined) {
+    return [];
   }
 
-  return buildEstimatedRoutePath(origin, destination);
+  const normalizedRouteSegments = normalizeRouteSegments(routePath ?? []);
+
+  if (normalizedRouteSegments.length > 0) {
+    return normalizedRouteSegments;
+  }
+
+  return [];
+}
+
+function connectRouteSegmentsToEndpoints(
+  origin: RoutePathPoint,
+  destination: RoutePathPoint,
+  segments: RoutePathSegment[]
+) {
+  const connectedSegments = normalizeRouteSegments(segments);
+
+  if (!connectedSegments.length) {
+    return connectedSegments;
+  }
+
+  const firstSegment = connectedSegments[0];
+  const firstPoint = firstSegment[0];
+
+  if (firstPoint && getDistanceMeters(origin, firstPoint) > 25) {
+    firstSegment.unshift(origin);
+  }
+
+  const lastSegment = connectedSegments[connectedSegments.length - 1];
+  const lastPoint = lastSegment[lastSegment.length - 1];
+
+  if (lastPoint && getDistanceMeters(lastPoint, destination) > 25) {
+    lastSegment.push(destination);
+  }
+
+  return connectedSegments;
 }
 
 function buildEstimatedRoutePath(origin: RoutePathPoint, destination: RoutePathPoint) {
@@ -406,6 +697,12 @@ function normalizeRoutePath(points: RoutePathPoint[]) {
   return normalized;
 }
 
+function normalizeRouteSegments(segments: RoutePathSegment[]) {
+  return segments
+    .map((segment) => normalizeRoutePath(segment))
+    .filter((segment) => segment.length > 1);
+}
+
 function pushRoutePoint(points: RoutePathPoint[], point: RoutePathPoint) {
   if (!isRouteCoordinate(point)) {
     return;
@@ -440,6 +737,23 @@ function isRouteCoordinate(point: RoutePathPoint) {
     point.lng >= 124 &&
     point.lng <= 132
   );
+}
+
+function getDistanceMeters(a: RoutePathPoint, b: RoutePathPoint) {
+  const earthRadiusMeters = 6371000;
+  const dLat = toRadians(b.lat - a.lat);
+  const dLng = toRadians(b.lng - a.lng);
+  const lat1 = toRadians(a.lat);
+  const lat2 = toRadians(b.lat);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+
+  return 2 * earthRadiusMeters * Math.asin(Math.sqrt(h));
+}
+
+function toRadians(degrees: number) {
+  return (degrees * Math.PI) / 180;
 }
 
 function StaticMapFallback({
@@ -574,10 +888,12 @@ function StaticMapFallback({
   );
 }
 
-function loadNaverMapSdk(
+export function loadNaverMapSdk(
   credential: NaverMapCredential,
   submodules?: string
 ): Promise<any> {
+  const resolvedSubmodules = normalizeSubmodules(submodules);
+
   if (window.naver?.maps) {
     return Promise.resolve(window.naver);
   }
@@ -588,6 +904,9 @@ function loadNaverMapSdk(
 
   naverMapPromise = new Promise((resolve, reject) => {
     const existingScript = document.getElementById(NAVER_MAP_SCRIPT_ID);
+    const resolveWhenReady = () => {
+      waitForNaverMapSdk().then(resolve).catch(reject);
+    };
 
     if (existingScript) {
       if (window.naver?.maps) {
@@ -595,11 +914,12 @@ function loadNaverMapSdk(
         return;
       }
 
-      existingScript.addEventListener("load", () => resolve(window.naver));
+      existingScript.addEventListener("load", resolveWhenReady);
       existingScript.addEventListener("error", () => {
         naverMapPromise = null;
         reject(new Error("NAVER Maps SDK failed to load"));
       });
+      waitForNaverMapSdk().then(resolve).catch(() => undefined);
       return;
     }
 
@@ -609,21 +929,15 @@ function loadNaverMapSdk(
     url.searchParams.set(credential.parameter, credential.value);
     url.searchParams.set("callback", NAVER_MAP_CALLBACK);
 
-    if (submodules) {
-      url.searchParams.set("submodules", submodules);
+    if (resolvedSubmodules) {
+      url.searchParams.set("submodules", resolvedSubmodules);
     }
 
     script.src = url.toString();
     script.async = true;
     script.defer = true;
-    window[NAVER_MAP_CALLBACK] = () => {
-      if (window.naver?.maps) {
-        resolve(window.naver);
-        return;
-      }
-
-      reject(new Error("NAVER Maps SDK did not initialize"));
-    };
+    window[NAVER_MAP_CALLBACK] = resolveWhenReady;
+    script.onload = resolveWhenReady;
     script.onerror = () => {
       naverMapPromise = null;
       reject(new Error("NAVER Maps SDK failed to load"));
@@ -634,7 +948,18 @@ function loadNaverMapSdk(
   return naverMapPromise;
 }
 
-function getNaverMapCredential(): NaverMapCredential | undefined {
+export function loadNaverGeocoderSdk(
+  credential: NaverMapCredential,
+  submodules?: string
+): Promise<any> {
+  const resolvedSubmodules = withRequiredSubmodules(submodules, ["geocoder"]);
+
+  return loadNaverMapSdk(credential, resolvedSubmodules).then((naver) =>
+    ensureNaverSubmodules(naver, resolvedSubmodules)
+  );
+}
+
+export function getNaverMapCredential(): NaverMapCredential | undefined {
   const keyId = import.meta.env.VITE_NAVER_MAP_KEY_ID;
   const clientId = import.meta.env.VITE_NAVER_MAP_CLIENT_ID;
 
@@ -655,56 +980,170 @@ function getNaverMapCredential(): NaverMapCredential | undefined {
   return undefined;
 }
 
-function resolveMapPoint(point?: MapPoint): ResolvedMapPoint | undefined {
-  if (!point) {
-    return undefined;
-  }
-
-  if (isKoreaCoordinate(point)) {
-    return point;
-  }
-
-  const knownPlace = KNOWN_PLACE_COORDINATES.find(({ keyword }) =>
-    point.name.includes(keyword)
+function normalizeSubmodules(submodules: string | undefined) {
+  const values = new Set(
+    String(submodules || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
   );
 
-  if (knownPlace) {
-    return {
-      ...point,
-      lat: knownPlace.lat,
-      lng: knownPlace.lng,
-      isApproximate: true,
-    };
+  return [...values].join(",");
+}
+
+function withRequiredSubmodules(submodules: string | undefined, required: string[]) {
+  const values = new Set(
+    normalizeSubmodules(submodules)
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+  );
+
+  for (const value of required) {
+    values.add(value);
   }
 
-  return {
-    ...point,
-    ...DEFAULT_CENTER,
-    isApproximate: true,
-  };
+  return [...values].join(",");
+}
+
+function getMapDisplaySubmodules(submodules: string | undefined) {
+  return normalizeSubmodules(submodules)
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value && value !== "geocoder")
+    .join(",");
+}
+
+function hasRequiredNaverSubmodules(submodules: string) {
+  const values = submodules.split(",").map((value) => value.trim());
+
+  if (values.includes("geocoder")) {
+    return typeof window.naver?.maps?.Service?.geocode === "function";
+  }
+
+  return true;
+}
+
+function ensureNaverSubmodules(naver: any, submodules: string) {
+  const values = submodules.split(",").map((value) => value.trim());
+
+  if (!values.includes("geocoder") || hasRequiredNaverSubmodules(submodules)) {
+    return Promise.resolve(naver);
+  }
+
+  return loadNaverGeocoderSubmodule().then(() => naver);
+}
+
+function loadNaverGeocoderSubmodule() {
+  if (hasRequiredNaverSubmodules("geocoder")) {
+    return Promise.resolve(window.naver);
+  }
+
+  if (naverGeocoderPromise) {
+    return naverGeocoderPromise;
+  }
+
+  naverGeocoderPromise = new Promise((resolve, reject) => {
+    const scriptId = "naver-map-geocoder-sdk";
+    const existingScript = document.getElementById(scriptId);
+
+    if (existingScript) {
+      if (hasRequiredNaverSubmodules("geocoder")) {
+        resolve(window.naver);
+        return;
+      }
+
+      existingScript.addEventListener("load", () => {
+        waitForNaverGeocoder().then(resolve).catch(reject);
+      });
+      existingScript.addEventListener("error", () => {
+        naverGeocoderPromise = null;
+        reject(new Error("NAVER Maps geocoder module failed to load"));
+      });
+      waitForNaverGeocoder().then(resolve).catch(() => undefined);
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.id = scriptId;
+    script.src = "https://oapi.map.naver.com/openapi/v3/maps-geocoder.js";
+    script.async = true;
+    script.defer = true;
+    script.onload = () => {
+      waitForNaverGeocoder().then(resolve).catch(reject);
+    };
+    script.onerror = () => {
+      naverGeocoderPromise = null;
+      reject(new Error("NAVER Maps geocoder module failed to load"));
+    };
+    document.head.appendChild(script);
+  });
+
+  return naverGeocoderPromise;
+}
+
+function waitForNaverMapSdk() {
+  return new Promise((resolve, reject) => {
+    let attempts = 0;
+    const maxAttempts = 80;
+
+    const check = () => {
+      if (typeof window.naver?.maps?.Map === "function") {
+        resolve(window.naver);
+        return;
+      }
+
+      attempts += 1;
+
+      if (attempts >= maxAttempts) {
+        naverMapPromise = null;
+        reject(new Error("NAVER Maps SDK did not initialize"));
+        return;
+      }
+
+      window.setTimeout(check, 50);
+    };
+
+    check();
+  });
+}
+
+function waitForNaverGeocoder() {
+  return new Promise((resolve, reject) => {
+    let attempts = 0;
+    const maxAttempts = 40;
+
+    const check = () => {
+      if (hasRequiredNaverSubmodules("geocoder")) {
+        resolve(window.naver);
+        return;
+      }
+
+      attempts += 1;
+
+      if (attempts >= maxAttempts) {
+        naverGeocoderPromise = null;
+        reject(new Error("NAVER Maps geocoder module did not initialize"));
+        return;
+      }
+
+      window.setTimeout(check, 50);
+    };
+
+    check();
+  });
 }
 
 function resolveCurrentPosition(
   position: { lat: number; lng: number } | undefined,
-  origin?: ResolvedMapPoint,
-  destination?: ResolvedMapPoint
+  _origin?: ResolvedMapPoint,
+  _destination?: ResolvedMapPoint
 ) {
   if (position && isKoreaCoordinate({ ...position, name: "현재 위치" })) {
     return position;
   }
 
-  if (origin && destination) {
-    return {
-      lat: origin.lat + (destination.lat - origin.lat) * 0.35,
-      lng: origin.lng + (destination.lng - origin.lng) * 0.35,
-    };
-  }
-
-  return position;
-}
-
-function isKoreaCoordinate(point: MapPoint): boolean {
-  return point.lat >= 33 && point.lat <= 39 && point.lng >= 124 && point.lng <= 132;
+  return undefined;
 }
 
 function getMapCenter(origin?: ResolvedMapPoint, destination?: ResolvedMapPoint) {

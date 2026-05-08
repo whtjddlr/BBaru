@@ -1,3 +1,4 @@
+import { handleCors } from "../_utils/cors.js";
 import { readJsonBody } from "../_utils/body.js";
 
 const ODSAY_ROUTE_URL =
@@ -6,12 +7,16 @@ const ODSAY_LANE_URL =
   process.env.ODSAY_LANE_BASE_URL || "https://api.odsay.com/v1/api/loadLane";
 
 export default async function handler(request, response) {
+  if (handleCors(request, response, ["POST", "OPTIONS"])) {
+    return;
+  }
+
   if (request.method !== "POST") {
     response.setHeader("Allow", "POST");
     return response.status(405).json({ error: "Method not allowed" });
   }
 
-  const apiKey = process.env.ODSAY_API_KEY;
+  const apiKey = getEnvValue("ODSAY_API_KEY");
 
   if (!apiKey) {
     return response.status(503).json({
@@ -48,7 +53,8 @@ export default async function handler(request, response) {
       url.searchParams.set("SearchPathType", String(body.searchPathType));
     }
 
-    const odsayResponse = await fetch(url);
+    const odsayHeaders = buildOdsayRequestHeaders(request);
+    const odsayResponse = await fetch(url, { headers: odsayHeaders });
     const payload = await odsayResponse.json();
     const upstreamError = Array.isArray(payload?.error)
       ? payload.error[0]
@@ -67,7 +73,12 @@ export default async function handler(request, response) {
     }
 
     const firstPath = payload?.result?.path?.[0];
-    const routeGeometry = await buildRouteGeometry(firstPath, coordinates, apiKey);
+    const routeGeometry = await buildRouteGeometry(
+      firstPath,
+      coordinates,
+      apiKey,
+      odsayHeaders
+    );
 
     return response.status(200).json({
       ...payload,
@@ -81,8 +92,14 @@ export default async function handler(request, response) {
   }
 }
 
-async function buildRouteGeometry(path, coordinates, apiKey) {
-  const laneGeometry = await fetchLaneGeometry(path?.info?.mapObj, apiKey);
+function getEnvValue(name) {
+  const value = process.env[name];
+
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+async function buildRouteGeometry(path, coordinates, apiKey, headers) {
+  const laneGeometry = await fetchLaneGeometry(path?.info?.mapObj, apiKey, headers);
   const fallbackGeometry = extractSubPathGeometry(path, coordinates);
 
   if (laneGeometry.points.length > 1) {
@@ -99,7 +116,7 @@ async function buildRouteGeometry(path, coordinates, apiKey) {
   };
 }
 
-async function fetchLaneGeometry(mapObj, apiKey) {
+async function fetchLaneGeometry(mapObj, apiKey, headers) {
   if (!mapObj || typeof mapObj !== "string") {
     return { points: [] };
   }
@@ -109,7 +126,7 @@ async function fetchLaneGeometry(mapObj, apiKey) {
     url.searchParams.set("mapObject", normalizeMapObject(mapObj));
     url.searchParams.set("apiKey", apiKey);
 
-    const laneResponse = await fetch(url);
+    const laneResponse = await fetch(url, { headers });
     const payload = await laneResponse.json();
     const upstreamError = Array.isArray(payload?.error)
       ? payload.error[0]
@@ -125,6 +142,70 @@ async function fetchLaneGeometry(mapObj, apiKey) {
     };
   } catch {
     return { points: [] };
+  }
+}
+
+function buildOdsayRequestHeaders(request) {
+  const appOrigin = getRequestOrigin(request);
+
+  if (!appOrigin) {
+    return {};
+  }
+
+  return {
+    Origin: appOrigin,
+    Referer: `${appOrigin}/`,
+  };
+}
+
+function getRequestOrigin(request) {
+  const origin = getHeaderValue(request, "origin");
+
+  if (origin) {
+    return normalizeOrigin(origin);
+  }
+
+  const referer = getHeaderValue(request, "referer");
+
+  if (referer) {
+    return normalizeOrigin(referer);
+  }
+
+  const forwardedHost = getHeaderValue(request, "x-forwarded-host");
+  const host = forwardedHost || getHeaderValue(request, "host");
+  const forwardedProto =
+    getHeaderValue(request, "x-forwarded-proto") || getDefaultProtocol(host);
+
+  if (host) {
+    return normalizeOrigin(`${forwardedProto}://${host}`);
+  }
+
+  if (process.env.VERCEL_URL) {
+    return normalizeOrigin(`https://${process.env.VERCEL_URL}`);
+  }
+
+  return "";
+}
+
+function getDefaultProtocol(host) {
+  return /^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(host) ? "http" : "https";
+}
+
+function getHeaderValue(request, name) {
+  const value = request.headers?.[name];
+
+  if (Array.isArray(value)) {
+    return value[0] ?? "";
+  }
+
+  return typeof value === "string" ? value : "";
+}
+
+function normalizeOrigin(value) {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return value.replace(/\/+$/, "");
   }
 }
 

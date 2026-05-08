@@ -1,3 +1,4 @@
+import { handleCors } from "../_utils/cors.js";
 import { readJsonBody } from "../_utils/body.js";
 
 const SOLAR_API_URL = getSolarApiUrl();
@@ -28,6 +29,10 @@ Rules:
 `.trim();
 
 export default async function handler(request, response) {
+  if (handleCors(request, response, ["POST", "OPTIONS"])) {
+    return;
+  }
+
   if (request.method !== "POST") {
     response.setHeader("Allow", "POST");
     return response.status(405).json({ error: "Method not allowed" });

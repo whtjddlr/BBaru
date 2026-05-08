@@ -1,15 +1,23 @@
-import { ArrowLeft, Clock, Navigation, AlertCircle, Zap, Timer, TrendingUp } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ArrowLeft, Clock, Navigation, AlertCircle, Timer, Footprints } from "lucide-react";
 import { MapView } from "../MapView";
 import { BottomSheet } from "../BottomSheet";
 import { StatusBadge } from "../StatusBadge";
 import { ActionCard } from "../ActionCard";
-import { TimeDisplay } from "../TimeDisplay";
+import { SignalInsightCard } from "../SignalInsightCard";
 import {
   buildRoutePlan,
   createDefaultRouteIntent,
   type RoutePoint,
   type RoutePlan,
 } from "../../domain/eta";
+import { resolveKnownPlacePoint } from "../../domain/places";
+import {
+  addWalkingSpeedPosition,
+  createInitialWalkingSpeedReading,
+  createWalkingSpeedTrackerState,
+  type WalkingSpeedReading,
+} from "../../services/walkingSpeed";
 
 interface EnRouteScreenProps {
   routePlan?: RoutePlan;
@@ -27,36 +35,29 @@ export function EnRouteScreen({
   const boardingWait = routePlan.segments.find((segment) => segment.id === "boarding-wait");
   const mainRide = routePlan.segments.find((segment) => segment.id === "main-ride");
   const finalWalk = routePlan.segments.find((segment) => segment.id === "destination-walk");
-  const originMapPoint = toMapPoint(routePlan.request.origin, routePlan.request.originPoint, {
-    lat: 1,
-    lng: 1,
-  });
+  const originMapPoint = toMapPoint(routePlan.request.origin, routePlan.request.originPoint);
   const destinationMapPoint = toMapPoint(
     routePlan.request.destination,
-    routePlan.request.destinationPoint,
-    { lat: 2, lng: 2 }
+    routePlan.request.destinationPoint
   );
-  const currentPosition = routePlan.request.originPoint
+  const livePosition = useLiveCurrentPosition(routePlan.request.originPoint);
+  const walkingSpeed = useWalkingSpeedTracker(livePosition, routePlan);
+  const currentPosition = livePosition
+    ? {
+        lat: livePosition.lat,
+        lng: livePosition.lng,
+      }
+    : routePlan.request.originPoint
     ? {
         lat: routePlan.request.originPoint.lat,
         lng: routePlan.request.originPoint.lng,
       }
-    : { lat: 1.5, lng: 1.5 };
+    : undefined;
 
   return (
     <div className="w-full h-screen bg-[#F8F9FB] relative overflow-hidden">
-      {/* Status Bar */}
-      <div className="absolute top-0 left-0 right-0 h-11 bg-blue-600 z-30 flex items-center justify-between px-5">
-        <span className="text-sm text-white" style={{ fontWeight: 600 }}>9:41</span>
-        <div className="flex items-center gap-1">
-          <div className="w-4 h-3 border border-white rounded-sm flex items-end px-0.5">
-            <div className="w-full h-2 bg-white rounded-[1px]" />
-          </div>
-        </div>
-      </div>
-
       {/* Navigation Header */}
-      <div className="absolute top-11 left-0 right-0 bg-blue-600 z-30">
+      <div className="absolute top-0 left-0 right-0 bg-blue-600 z-30">
         <div className="px-5 py-4">
           <div className="flex items-center justify-between mb-3">
             <button onClick={onBack} className="p-2 -ml-2 hover:bg-blue-500 rounded-lg transition-colors">
@@ -86,7 +87,7 @@ export function EnRouteScreen({
       </div>
 
       {/* Map with Current Position */}
-      <div className="absolute inset-0 top-[165px]">
+      <div className="absolute inset-0 top-[121px]">
         <MapView
           origin={originMapPoint}
           destination={destinationMapPoint}
@@ -96,26 +97,17 @@ export function EnRouteScreen({
       </div>
 
       {/* Real-time Action Alert */}
-      <div className="absolute top-[185px] left-5 right-5 z-20">
+      <div className="absolute top-[141px] left-5 right-5 z-20">
         <ActionCard
-          icon={Zap}
-          title={routePlan.request.strategy === "ontime" ? "현재 속도 유지하세요" : "여유 버퍼를 유지하세요"}
-          description={routePlan.explanation}
-          variant="success"
-        >
-          <div className="mt-3 pt-3 border-t border-white/20">
-            <div className="flex items-center justify-between text-sm">
-              <span className="opacity-90">다음 재계산 지점</span>
-              <span style={{ fontWeight: 600 }}>
-                {signalWait?.label ?? "횡단보도"} (120m)
-              </span>
-            </div>
-          </div>
-        </ActionCard>
+          icon={Navigation}
+          title="다음 확인 지점까지 이동"
+          description="GPS가 기준선을 넘으면 다음 신호 기준으로 즉시 다시 맞춥니다."
+          variant="primary"
+        />
       </div>
 
       {/* Progress Indicator */}
-      <div className="absolute top-[330px] left-5 right-5 z-20">
+      <div className="absolute top-[286px] left-5 right-5 z-20">
         <div className="bg-white rounded-2xl p-4 shadow-lg border border-neutral-200">
           <div className="flex items-center justify-between mb-2">
             <span className="text-sm text-neutral-600">이동 진행도</span>
@@ -164,6 +156,16 @@ export function EnRouteScreen({
             </div>
           </div>
 
+          <div>
+            <h3 className="text-neutral-900 mb-3" style={{ fontWeight: 600 }}>다음 신호</h3>
+            <SignalInsightCard
+              signal={routePlan.trafficSignal}
+              signals={routePlan.trafficSignals}
+              currentPosition={livePosition}
+              originPoint={routePlan.request.originPoint}
+            />
+          </div>
+
           {/* Time Comparison */}
           <div>
             <h3 className="text-neutral-900 mb-3" style={{ fontWeight: 600 }}>도착 시각 비교</h3>
@@ -171,7 +173,9 @@ export function EnRouteScreen({
               <div className="bg-white border border-neutral-200 rounded-xl p-3 text-center">
                 <div className="text-xs text-neutral-500 mb-1">목표</div>
                 <div className="text-xl text-neutral-900 tabular-nums" style={{ fontWeight: 700 }}>
-                  {routePlan.summary.targetArrivalTime}
+                {routePlan.summary.planningMode === "leaveNow"
+                  ? routePlan.summary.recommendedDepartureTime
+                  : routePlan.summary.targetArrivalTime}
                 </div>
               </div>
               <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-center">
@@ -183,7 +187,9 @@ export function EnRouteScreen({
               <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-center">
                 <div className="text-xs text-blue-600 mb-1">편차</div>
                 <div className="text-xl text-blue-900 tabular-nums" style={{ fontWeight: 700 }}>
-                  {routePlan.summary.arrivalDeltaMinutes}분
+                  {routePlan.summary.planningMode === "leaveNow"
+                    ? "현재"
+                    : `${routePlan.summary.arrivalDeltaMinutes}분`}
                 </div>
               </div>
             </div>
@@ -221,7 +227,7 @@ export function EnRouteScreen({
                       <span className="text-xs text-amber-700 bg-amber-50 px-2 py-1 rounded" style={{ fontWeight: 600 }}>120m</span>
                     </div>
                     <div className="text-xs text-amber-700 mb-2">
-                      약 {signalWait?.durationMinutes ?? 1}분 대기 예상
+                      위치가 기준선을 넘으면 다음 신호
                     </div>
                     <div className="flex items-center gap-2 text-xs text-neutral-600">
                       <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />
@@ -241,7 +247,7 @@ export function EnRouteScreen({
                         {mainRide?.label ?? "주 이동 구간"}
                       </span>
                       <span className="text-xs text-neutral-500">
-                        {boardingWait?.durationMinutes ?? 3}분 후
+                        {formatBoardingWaitLabel(boardingWait?.durationMinutes)}
                       </span>
                     </div>
                     <div className="text-xs text-neutral-500">
@@ -272,69 +278,301 @@ export function EnRouteScreen({
               <Clock className="w-5 h-5 text-amber-600" />
               <div className="flex-1">
                 <div className="text-sm text-amber-900" style={{ fontWeight: 600 }}>다음 이벤트까지</div>
-                <div className="text-xs text-amber-700">횡단보도 앞 약 90초 후 도착</div>
+                <div className="text-xs text-amber-700">
+                  GPS 통과 기준으로 다음 신호 타이머를 재설정합니다.
+                </div>
               </div>
             </div>
           </div>
 
-          {/* Speed Adjustment Options */}
-          <div>
-            <h3 className="text-neutral-900 mb-3" style={{ fontWeight: 600 }}>속도 조절 옵션</h3>
-            <div className="space-y-2">
-              <button className="w-full p-4 bg-neutral-50 rounded-xl hover:bg-neutral-100 transition-colors border border-neutral-200">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>조금 더 빠르게 이동</span>
-                  <TrendingUp className="w-4 h-4 text-neutral-500" />
-                </div>
-                <div className="text-xs text-neutral-600 text-left">
-                  {routePlan.strategies[0]?.expectedArrivalTime} 도착 · {routePlan.strategies[0]?.badge}
-                </div>
-              </button>
-              <button className="w-full p-4 bg-blue-600 rounded-xl border-2 border-blue-600">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-sm text-white" style={{ fontWeight: 600 }}>현재 속도 유지 (권장)</span>
-                  <div className="w-2 h-2 bg-white rounded-full" />
-                </div>
-                <div className="text-xs text-white/90 text-left">
-                  {routePlan.summary.expectedArrivalTime} 도착 · {routePlan.summary.arrivalDeltaLabel}
-                </div>
-              </button>
-              <button className="w-full p-4 bg-neutral-50 rounded-xl hover:bg-neutral-100 transition-colors border border-neutral-200">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>여유롭게 이동</span>
-                  <Timer className="w-4 h-4 text-neutral-500" />
-                </div>
-                <div className="text-xs text-neutral-600 text-left">
-                  {routePlan.strategies[2]?.expectedArrivalTime} 도착 · {routePlan.strategies[2]?.badge}
-                </div>
-              </button>
-            </div>
-          </div>
-
-          {/* Next Recalculation Point */}
-          <div className="bg-neutral-100 rounded-xl p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse" />
-              <span className="text-sm text-neutral-700" style={{ fontWeight: 600 }}>다음 재계산 지점</span>
-            </div>
-            <div className="text-xs text-neutral-600">
-              횡단보도 도착 시 실시간 신호 정보를 반영하여 ETA를 재계산합니다
-            </div>
-          </div>
+          <WalkingPaceCard
+            routePlan={routePlan}
+            firstWalk={firstWalk}
+            walkingSpeed={walkingSpeed}
+          />
         </div>
       </BottomSheet>
     </div>
   );
 }
 
+function formatBoardingWaitLabel(durationMinutes?: number) {
+  if (!durationMinutes) {
+    return "경로 시간 반영";
+  }
+
+  return `${durationMinutes}분 후`;
+}
+
+function WalkingPaceCard({
+  routePlan,
+  firstWalk,
+  walkingSpeed,
+}: {
+  routePlan: RoutePlan;
+  firstWalk?: RoutePlan["segments"][number];
+  walkingSpeed: WalkingSpeedReading;
+}) {
+  const guidance = getWalkingPaceGuidance(routePlan, walkingSpeed, firstWalk);
+  const paceSpeed =
+    walkingSpeed.currentMetersPerMinute ??
+    walkingSpeed.learnedMetersPerMinute ??
+    walkingSpeed.fallbackMetersPerMinute;
+  const walkMinutes = firstWalk?.durationMinutes ?? 0;
+  const walkDistance = firstWalk?.distanceMeters;
+
+  return (
+    <section className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+      <div className="flex items-start gap-3">
+        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl ${guidance.iconClassName}`}>
+          <Footprints className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="text-sm text-neutral-950" style={{ fontWeight: 800 }}>
+                걷기 페이스
+              </h3>
+              <div className="mt-1 text-base text-neutral-950" style={{ fontWeight: 900 }}>
+                {guidance.title}
+              </div>
+            </div>
+            <div className={`shrink-0 rounded-full px-2.5 py-1 text-xs tabular-nums ${guidance.badgeClassName}`} style={{ fontWeight: 800 }}>
+              {guidance.badge}
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-3 gap-2">
+            <PaceMetric label="현재" value={formatWalkingSpeedValue(walkingSpeed.currentMetersPerMinute)} />
+            <PaceMetric label="평균" value={formatWalkingSpeedValue(walkingSpeed.learnedMetersPerMinute ?? walkingSpeed.fallbackMetersPerMinute)} />
+            <PaceMetric label="오차" value={formatAccuracy(walkingSpeed.accuracyMeters)} />
+          </div>
+
+          <div className="mt-3 rounded-xl bg-neutral-50 px-3 py-2 text-xs leading-5 text-neutral-600">
+            {getWalkingSpeedDetail(walkingSpeed, walkDistance, walkMinutes, paceSpeed)}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PaceMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl bg-neutral-50 px-2.5 py-2">
+      <div className="text-[11px] text-neutral-500">{label}</div>
+      <div className="mt-0.5 truncate text-xs text-neutral-950 tabular-nums" style={{ fontWeight: 800 }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function getWalkingPaceGuidance(
+  routePlan: RoutePlan,
+  walkingSpeed: WalkingSpeedReading,
+  firstWalk?: RoutePlan["segments"][number]
+) {
+  if (walkingSpeed.status === "low_accuracy") {
+    return {
+      title: "GPS 안정화 대기",
+      badge: "오차 큼",
+      iconClassName: "bg-neutral-100 text-neutral-600",
+      badgeClassName: "bg-neutral-100 text-neutral-700",
+    };
+  }
+
+  if (walkingSpeed.status === "waiting" || walkingSpeed.status === "calibrating") {
+    return {
+      title: "속도 측정 중",
+      badge: "보정 전",
+      iconClassName: "bg-blue-50 text-blue-700",
+      badgeClassName: "bg-blue-100 text-blue-800",
+    };
+  }
+
+  if (walkingSpeed.status === "paused") {
+    return {
+      title: "대기 중",
+      badge: "평균 제외",
+      iconClassName: "bg-neutral-100 text-neutral-600",
+      badgeClassName: "bg-neutral-100 text-neutral-700",
+    };
+  }
+
+  const adjustedWalkDelta = getAdjustedFirstWalkDelta(routePlan, walkingSpeed, firstWalk);
+
+  if (
+    routePlan.summary.planningMode === "arriveBy" &&
+    routePlan.summary.currentArrivalDeltaMinutes + adjustedWalkDelta > 2
+  ) {
+    return {
+      title: "조금 빠르게 걷기",
+      badge: `${Math.max(
+        1,
+        Math.round(routePlan.summary.currentArrivalDeltaMinutes + adjustedWalkDelta)
+      )}분 늦음`,
+      iconClassName: "bg-amber-50 text-amber-700",
+      badgeClassName: "bg-amber-100 text-amber-800",
+    };
+  }
+
+  if (
+    routePlan.summary.planningMode === "arriveBy" &&
+    routePlan.summary.currentArrivalDeltaMinutes + adjustedWalkDelta < -5
+  ) {
+    return {
+      title: "여유 있게 걸어도 됨",
+      badge: `${Math.abs(
+        Math.round(routePlan.summary.currentArrivalDeltaMinutes + adjustedWalkDelta)
+      )}분 여유`,
+      iconClassName: "bg-emerald-50 text-emerald-700",
+      badgeClassName: "bg-emerald-100 text-emerald-800",
+    };
+  }
+
+  return {
+    title: "현재 페이스 유지",
+    badge: "적정",
+    iconClassName: "bg-blue-50 text-blue-700",
+    badgeClassName: "bg-blue-100 text-blue-800",
+  };
+}
+
+function getAdjustedFirstWalkDelta(
+  routePlan: RoutePlan,
+  walkingSpeed: WalkingSpeedReading,
+  firstWalk?: RoutePlan["segments"][number]
+) {
+  const speed = walkingSpeed.currentMetersPerMinute ?? walkingSpeed.learnedMetersPerMinute;
+
+  if (!speed || !firstWalk?.distanceMeters || firstWalk.durationMinutes <= 0) {
+    return 0;
+  }
+
+  const adjustedWalkMinutes = Math.max(1, Math.ceil(firstWalk.distanceMeters / speed));
+
+  return adjustedWalkMinutes - firstWalk.durationMinutes;
+}
+
+function getWalkingSpeedDetail(
+  walkingSpeed: WalkingSpeedReading,
+  walkDistance: number | undefined,
+  walkMinutes: number,
+  paceSpeed: number
+) {
+  if (walkingSpeed.status === "live" && walkDistance) {
+    const adjustedWalkMinutes = Math.max(1, Math.ceil(walkDistance / paceSpeed));
+    const diffMinutes = adjustedWalkMinutes - walkMinutes;
+
+    if (diffMinutes > 0) {
+      return `현재 속도 기준 도보 구간이 약 ${diffMinutes}분 늘어납니다.`;
+    }
+
+    if (diffMinutes < 0) {
+      return `현재 속도 기준 도보 구간이 약 ${Math.abs(diffMinutes)}분 줄어듭니다.`;
+    }
+
+    return "현재 속도가 계획된 도보 시간과 비슷합니다.";
+  }
+
+  return walkingSpeed.detail;
+}
+
+function formatWalkingSpeedValue(metersPerMinute?: number) {
+  if (!metersPerMinute) {
+    return "측정 중";
+  }
+
+  return `${Math.round(metersPerMinute)}m/분`;
+}
+
+function formatAccuracy(accuracyMeters?: number) {
+  if (!accuracyMeters) {
+    return "확인 중";
+  }
+
+  return `±${Math.round(accuracyMeters)}m`;
+}
+
 function toMapPoint(
   name: string,
-  point: RoutePoint | undefined,
-  fallback: { lat: number; lng: number }
+  point: RoutePoint | undefined
 ) {
+  const resolvedPoint = resolveKnownPlacePoint(name, point ? { ...point, name } : undefined);
+
+  if (!resolvedPoint) {
+    return undefined;
+  }
+
   return {
-    lat: point?.lat ?? fallback.lat,
-    lng: point?.lng ?? fallback.lng,
-    name: point?.name || name,
+    lat: resolvedPoint.lat,
+    lng: resolvedPoint.lng,
+    name: resolvedPoint.name || name,
   };
+}
+
+function useWalkingSpeedTracker(position: RoutePoint | undefined, routePlan: RoutePlan) {
+  const [reading, setReading] = useState<WalkingSpeedReading>(() =>
+    createInitialWalkingSpeedReading(routePlan)
+  );
+  const trackerRef = useRef(createWalkingSpeedTrackerState(routePlan));
+  const routeKey = `${routePlan.request.origin}->${routePlan.request.destination}`;
+
+  useEffect(() => {
+    trackerRef.current = createWalkingSpeedTrackerState(routePlan);
+    setReading(createInitialWalkingSpeedReading(routePlan));
+  }, [routeKey, routePlan]);
+
+  useEffect(() => {
+    if (!position?.timestampMs) {
+      return;
+    }
+
+    const nextState = addWalkingSpeedPosition(
+      trackerRef.current,
+      position,
+      routePlan
+    );
+    trackerRef.current = nextState;
+    setReading(nextState.reading);
+  }, [position?.timestampMs, routePlan]);
+
+  return reading;
+}
+
+function useLiveCurrentPosition(initialPosition?: RoutePoint) {
+  const [position, setPosition] = useState<RoutePoint | undefined>(initialPosition);
+
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      return;
+    }
+
+    const watchId = navigator.geolocation.watchPosition(
+      (nextPosition) => {
+        setPosition({
+          lat: nextPosition.coords.latitude,
+          lng: nextPosition.coords.longitude,
+          name: "현재 위치",
+          accuracyMeters: nextPosition.coords.accuracy,
+          speedMetersPerSecond:
+            typeof nextPosition.coords.speed === "number"
+              ? nextPosition.coords.speed
+              : undefined,
+          timestampMs: nextPosition.timestamp,
+        });
+      },
+      undefined,
+      {
+        enableHighAccuracy: true,
+        maximumAge: 5_000,
+        timeout: 10_000,
+      }
+    );
+
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, []);
+
+  return position;
 }
