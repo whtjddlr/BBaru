@@ -1,16 +1,17 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { Search, Clock, MapPin, TrendingUp, Navigation2, Smartphone, X } from "lucide-react";
+import { Search, Clock, MapPin, TrendingUp, Navigation2, Smartphone, X, Bell } from "lucide-react";
 import { useRouteState } from "../../context/RouteContext";
-import { formatDurationCompact, GeoPoint } from "../../lib/eta";
+import { formatClock, formatDurationCompact, GeoPoint } from "../../lib/eta";
 import { searchPois, TmapPoi } from "../../lib/tmap";
 import { useInstallPrompt } from "../../lib/useInstallPrompt";
+import { isDepartureAlarmActive } from "../../lib/departureAlarm";
 
 type PoiSuggestionStatus = "idle" | "loading" | "success" | "empty";
 
 export function MainScreen() {
   const navigate = useNavigate();
-  const { recentRoutes, searchRequest, startSearch } = useRouteState();
+  const { recentRoutes, searchRequest, startSearch, departureAlarm, cancelDepartureAlarm } = useRouteState();
   const [origin, setOrigin] = useState(searchRequest?.origin ?? "");
   const [destination, setDestination] = useState(searchRequest?.destination ?? "");
   const [originPoint, setOriginPoint] = useState<GeoPoint | undefined>(searchRequest?.originPoint);
@@ -19,6 +20,7 @@ export function MainScreen() {
   const originSuggestions = usePoiSuggestions(origin, originPoint);
   const destinationSuggestions = usePoiSuggestions(destination, destinationPoint);
   const installPrompt = useInstallPrompt();
+  const hasActiveDepartureAlarm = isDepartureAlarmActive(departureAlarm);
   const sameRoute = origin.trim().length > 0 &&
     destination.trim().length > 0 &&
     origin.trim().toLowerCase() === destination.trim().toLowerCase();
@@ -43,6 +45,24 @@ export function MainScreen() {
           <p className="text-sm text-neutral-600">정시 도착 최적화</p>
         </div>
       </header>
+
+      {hasActiveDepartureAlarm && departureAlarm && (
+        <section aria-label="출발 알림" className="shrink-0 px-5 pt-4">
+          <div role="status" aria-live="polite" className="flex items-center gap-3 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3">
+            <Bell className="size-4 shrink-0 text-blue-600" aria-hidden="true" />
+            <div className="min-w-0 flex-1 text-sm font-semibold text-blue-900">
+              {formatClock(new Date(departureAlarm.recommendedDepartureIso))} 출발 알림 설정됨
+            </div>
+            <button
+              type="button"
+              onClick={cancelDepartureAlarm}
+              className="shrink-0 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-blue-600 shadow-sm"
+            >
+              취소
+            </button>
+          </div>
+        </section>
+      )}
 
       <section aria-labelledby="route-search-title" className="shrink-0 px-5 py-4">
         <h2 id="route-search-title" className="sr-only">경로 검색</h2>

@@ -8,9 +8,18 @@ import {
   useRef,
   useState,
 } from "react";
-import { createEtaPlan, EtaMode, EtaPlan, EtaSearchRequest, GeoPoint, normalizeRequest } from "../lib/eta";
+import { createEtaPlan, EtaMode, EtaPlan, EtaSearchRequest, formatClock, GeoPoint, normalizeRequest } from "../lib/eta";
 import { fetchTransitRoutes, searchPois, TmapTransitResponse } from "../lib/tmap";
 import { mapTransitResponseToPlan } from "../lib/transitMapper";
+import {
+  clearDepartureAlarm,
+  createDepartureAlarm,
+  DepartureAlarm,
+  DepartureAlarmFireType,
+  markAlarmFired,
+  readDepartureAlarm,
+  writeDepartureAlarm,
+} from "../lib/departureAlarm";
 
 const ACTIVE_SEARCH_KEY = "bbaru:active-search";
 const RECENT_ROUTES_KEY = "bbaru:recent-routes";
@@ -45,11 +54,16 @@ interface RouteContextValue {
   selectedMode: EtaMode;
   recentRoutes: RecentRoute[];
   routePlanState: RoutePlanState;
+  departureAlarm: DepartureAlarm | null;
   hasActiveSearch: boolean;
   setSelectedMode: (mode: EtaMode) => void;
   startSearch: (request: EtaSearchRequest) => EtaSearchRequest;
   retrySearch: () => void;
   clearSearch: () => void;
+  scheduleDepartureAlarm: (plan: EtaPlan) => DepartureAlarm;
+  cancelDepartureAlarm: () => void;
+  markDepartureAlarmFired: (fireType: DepartureAlarmFireType) => void;
+  refreshDepartureAlarm: () => void;
   refreshRecentRoutes: () => void;
 }
 
@@ -63,6 +77,7 @@ export function RouteProvider({ children }: { children: ReactNode }) {
   const [selectedMode, setSelectedModeState] = useState<EtaMode>(initialSearch?.mode ?? "balanced");
   const [recentRoutes, setRecentRoutes] = useState<RecentRoute[]>(() => readRecentRoutes());
   const [routePlanState, setRoutePlanState] = useState<RoutePlanState>({ status: "idle" });
+  const [departureAlarm, setDepartureAlarm] = useState<DepartureAlarm | null>(() => readDepartureAlarm());
   const routeRequestIdRef = useRef(0);
 
   const loadRoutePlan = useCallback(async (request: EtaSearchRequest) => {
@@ -153,6 +168,7 @@ export function RouteProvider({ children }: { children: ReactNode }) {
       selectedMode,
       recentRoutes,
       routePlanState,
+      departureAlarm,
       hasActiveSearch: Boolean(searchRequest),
       setSelectedMode: (mode) => {
         setSelectedModeState(mode);
@@ -181,11 +197,47 @@ export function RouteProvider({ children }: { children: ReactNode }) {
         setRoutePlanState({ status: "idle" });
         removeActiveSearch();
       },
+      scheduleDepartureAlarm: (plan) => {
+        const alarm = createDepartureAlarm(
+          {
+            origin: plan.request.origin,
+            destination: plan.request.destination,
+            targetTime: formatClock(plan.targetArrival),
+          },
+          plan.recommendedDeparture,
+          new Date(),
+        );
+
+        writeDepartureAlarm(alarm);
+        setDepartureAlarm(alarm);
+
+        return alarm;
+      },
+      cancelDepartureAlarm: () => {
+        clearDepartureAlarm();
+        setDepartureAlarm(null);
+      },
+      markDepartureAlarmFired: (fireType) => {
+        setDepartureAlarm((currentAlarm) => {
+          if (!currentAlarm) {
+            return null;
+          }
+
+          const nextAlarm = markAlarmFired(currentAlarm, fireType);
+
+          writeDepartureAlarm(nextAlarm);
+
+          return nextAlarm;
+        });
+      },
+      refreshDepartureAlarm: () => {
+        setDepartureAlarm(readDepartureAlarm());
+      },
       refreshRecentRoutes: () => {
         setRecentRoutes(readRecentRoutes());
       },
     }),
-    [loadRoutePlan, recentRoutes, routePlanState, searchRequest, selectedMode],
+    [departureAlarm, loadRoutePlan, recentRoutes, routePlanState, searchRequest, selectedMode],
   );
 
   return <RouteContext.Provider value={value}>{children}</RouteContext.Provider>;

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { ArrowLeft, Clock, Timer, Play, AlertTriangle } from "lucide-react";
+import { ArrowLeft, Clock, Timer, Play, AlertTriangle, Bell } from "lucide-react";
 import { MapView } from "../MapView";
 import { BottomSheet } from "../BottomSheet";
 import { StatusBadge } from "../StatusBadge";
@@ -27,6 +27,10 @@ import {
   getWalkingRoutePoints,
 } from "../../lib/signal";
 import { mapTransitResponseToPlan } from "../../lib/transitMapper";
+import {
+  isMatchingDepartureAlarm,
+  requestDepartureNotificationPermission,
+} from "../../lib/departureAlarm";
 
 const modeOrder: EtaMode[] = ["safe", "balanced", "punctual"];
 
@@ -37,9 +41,19 @@ type SignalCrossroadLookupState =
 
 export function RouteResultScreen() {
   const navigate = useNavigate();
-  const { searchRequest, selectedMode, setSelectedMode, routePlanState, retrySearch } = useRouteState();
+  const {
+    searchRequest,
+    selectedMode,
+    setSelectedMode,
+    routePlanState,
+    retrySearch,
+    departureAlarm,
+    scheduleDepartureAlarm,
+    cancelDepartureAlarm,
+  } = useRouteState();
   const [now, setNow] = useState(() => new Date());
   const [signalLookupState, setSignalLookupState] = useState<SignalCrossroadLookupState>({ status: "idle" });
+  const [alarmNotice, setAlarmNotice] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -106,6 +120,33 @@ export function RouteResultScreen() {
       ? { variant: "late" as const, label: "목표 시각 지남" }
       : { variant: deviationBadgeVariant(plan.deviationMinutes), label: formatDeviation(plan.deviationMinutes) };
   const actionVariant = plan.status.kind === "late" || plan.status.kind === "target_passed" ? "warning" : "primary";
+  const alarmRouteSummary = {
+    origin: plan.request.origin,
+    destination: plan.request.destination,
+    targetTime: formatClock(plan.targetArrival),
+  };
+  const isDepartureAlarmSet = isMatchingDepartureAlarm(
+    departureAlarm,
+    alarmRouteSummary,
+    plan.recommendedDeparture,
+  );
+
+  const handleDepartureAlarmClick = async () => {
+    if (isDepartureAlarmSet) {
+      cancelDepartureAlarm();
+      setAlarmNotice("출발 알림을 취소했습니다.");
+      return;
+    }
+
+    const permission = await requestDepartureNotificationPermission();
+
+    scheduleDepartureAlarm(plan);
+    setAlarmNotice(
+      permission === "granted"
+        ? "출발 시각에 시스템 알림으로 알려드립니다."
+        : "알림 권한이 없어도 앱 안에서 출발 시각을 알려드립니다.",
+    );
+  };
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col bg-[#F8F9FB]">
@@ -208,6 +249,32 @@ export function RouteResultScreen() {
                   >
                     재시도
                   </button>
+                )}
+              </div>
+            )}
+
+            {plan.status.kind === "wait" && (
+              <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Bell className="size-4 shrink-0 text-blue-600" aria-hidden="true" />
+                    <span className="text-sm font-semibold text-blue-900">
+                      {formatClock(plan.recommendedDeparture)} 출발 알림
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    aria-pressed={isDepartureAlarmSet}
+                    onClick={handleDepartureAlarmClick}
+                    className="shrink-0 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-blue-600 shadow-sm"
+                  >
+                    {isDepartureAlarmSet ? "알림 설정됨 · 취소" : "출발 알림 받기"}
+                  </button>
+                </div>
+                {alarmNotice && (
+                  <p role="status" aria-live="polite" className="mt-2 text-xs font-semibold text-blue-700">
+                    {alarmNotice}
+                  </p>
                 )}
               </div>
             )}
