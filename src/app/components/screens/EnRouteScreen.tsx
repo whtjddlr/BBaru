@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import confetti from "canvas-confetti";
-import { ArrowLeft, Clock, Navigation, AlertCircle, Zap, Timer, TrendingUp } from "lucide-react";
+import { ArrowLeft, Clock, Navigation, AlertCircle, Zap, Timer, TrendingUp, Pause, Play } from "lucide-react";
 import { MapView } from "../MapView";
 import { BottomSheet } from "../BottomSheet";
 import { StatusBadge } from "../StatusBadge";
@@ -18,12 +18,17 @@ import {
   RouteSegment,
 } from "../../lib/eta";
 import {
+  findCrossedWaitTrigger,
+  getCrossingWaitTriggers,
+  getDemoSpeedMultiplier,
   getNextEvent,
   getProgressState,
   getRemainingWalkingDistance,
+  getSignalWaitDecision,
   interpolateRoutePosition,
   scaleSpeedDelta,
 } from "../../lib/enRoute";
+import type { CrossingWaitTrigger } from "../../lib/enRoute";
 import {
   adviseCrossing,
   createWalkingRouteSignalKey,
@@ -54,14 +59,37 @@ interface ActiveSignalInfo {
   fetchedAt: number;
 }
 
+interface SignalWaitState {
+  trigger: CrossingWaitTrigger;
+  remainingDemoSeconds: number;
+  totalDemoSeconds: number;
+  addedDelaySeconds: number;
+}
+
+interface SimulationState {
+  elapsedSeconds: number;
+  manualPaused: boolean;
+  signalWait: SignalWaitState | null;
+  accumulatedSignalDelaySeconds: number;
+}
+
+const TICK_SECONDS = 0.5;
+
 export function EnRouteScreen() {
   const navigate = useNavigate();
   const { clearSearch, searchRequest, selectedMode, routePlanState } = useRouteState();
-  const [progress, setProgress] = useState(0);
+  const [simulation, setSimulation] = useState<SimulationState>({
+    elapsedSeconds: 0,
+    manualPaused: false,
+    signalWait: null,
+    accumulatedSignalDelaySeconds: 0,
+  });
   const [speedMode, setSpeedMode] = useState<SpeedMode>("steady");
   const [activeSignalInfo, setActiveSignalInfo] = useState<ActiveSignalInfo | null>(null);
   const [signalNow, setSignalNow] = useState(() => Date.now());
   const celebratedRef = useRef(false);
+  const handledWaitTriggerIdsRef = useRef<Set<string>>(new Set());
+  const activeSignalInfoRef = useRef<ActiveSignalInfo | null>(null);
   const plan = useMemo(() => {
     if (!searchRequest) {
       return null;
@@ -72,32 +100,30 @@ export function EnRouteScreen() {
     return buildPlanForMode(planRequest, routePlanState, selectedMode, new Date());
   }, [routePlanState, searchRequest, selectedMode]);
 
+  const crossingWaitTriggers = useMemo(() => (plan ? getCrossingWaitTriggers(plan.segments) : []), [plan]);
+  const demoSpeedMultiplier = plan ? getDemoSpeedMultiplier(plan.totalDuration, plan.seed) : 1;
+  const progress = plan ? Math.min(100, (simulation.elapsedSeconds / plan.totalDuration) * 100) : 0;
+  const arrived = Boolean(plan && simulation.elapsedSeconds >= plan.totalDuration && !simulation.signalWait);
+  const signalRouteKey = plan ? createWalkingRouteSignalKey(plan.segments) : "";
+
+  useEffect(() => {
+    activeSignalInfoRef.current = activeSignalInfo;
+  }, [activeSignalInfo]);
+
   useEffect(() => {
     if (!plan) {
-      return undefined;
+      return;
     }
 
-    const demoDurationMs = 60000 + (plan.seed % 30000);
-    const startedAt = Date.now();
-    setProgress(0);
+    handledWaitTriggerIdsRef.current = new Set();
     celebratedRef.current = false;
-
-    const timer = window.setInterval(() => {
-      const nextProgress = Math.min(100, ((Date.now() - startedAt) / demoDurationMs) * 100);
-      setProgress(nextProgress);
-
-      if (nextProgress >= 100) {
-        window.clearInterval(timer);
-      }
-    }, 500);
-
-    return () => {
-      window.clearInterval(timer);
-    };
+    setSimulation({
+      elapsedSeconds: 0,
+      manualPaused: false,
+      signalWait: null,
+      accumulatedSignalDelaySeconds: 0,
+    });
   }, [plan]);
-
-  const arrived = progress >= 100;
-  const signalRouteKey = plan ? createWalkingRouteSignalKey(plan.segments) : "";
 
   useEffect(() => {
     if (!arrived || celebratedRef.current) {
@@ -107,6 +133,85 @@ export function EnRouteScreen() {
     celebratedRef.current = true;
     confetti({ particleCount: 100, spread: 70, origin: { y: 0.35 } });
   }, [arrived]);
+
+  useEffect(() => {
+    if (!plan || arrived) {
+      return undefined;
+    }
+
+    const timer = window.setInterval(() => {
+      setSimulation((current) => {
+        if (current.manualPaused) {
+          return current;
+        }
+
+        if (current.signalWait) {
+          const nextRemaining = current.signalWait.remainingDemoSeconds - TICK_SECONDS;
+
+          if (nextRemaining > 0) {
+            return {
+              ...current,
+              signalWait: {
+                ...current.signalWait,
+                remainingDemoSeconds: nextRemaining,
+              },
+            };
+          }
+
+          return {
+            ...current,
+            signalWait: null,
+            accumulatedSignalDelaySeconds:
+              current.accumulatedSignalDelaySeconds + current.signalWait.addedDelaySeconds,
+          };
+        }
+
+        const nextElapsedSeconds = Math.min(
+          plan.totalDuration,
+          current.elapsedSeconds + demoSpeedMultiplier * TICK_SECONDS,
+        );
+        const trigger = findCrossedWaitTrigger(
+          crossingWaitTriggers,
+          current.elapsedSeconds,
+          nextElapsedSeconds,
+          handledWaitTriggerIdsRef.current,
+        );
+
+        if (!trigger) {
+          return {
+            ...current,
+            elapsedSeconds: nextElapsedSeconds,
+          };
+        }
+
+        handledWaitTriggerIdsRef.current.add(trigger.id);
+        const signal = getCurrentSignal(activeSignalInfoRef.current, Date.now());
+        const waitDecision = getSignalWaitDecision(signal, demoSpeedMultiplier);
+
+        if (!waitDecision.shouldWait) {
+          return {
+            ...current,
+            elapsedSeconds: nextElapsedSeconds,
+          };
+        }
+
+        return {
+          ...current,
+          elapsedSeconds: trigger.elapsedSeconds,
+          signalWait: {
+            trigger,
+            remainingDemoSeconds: waitDecision.demoWaitSeconds,
+            totalDemoSeconds: waitDecision.demoWaitSeconds,
+            addedDelaySeconds: waitDecision.realDelaySeconds,
+          },
+        };
+      });
+    }, TICK_SECONDS * 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [arrived, crossingWaitTriggers, demoSpeedMultiplier, plan]);
 
   useEffect(() => {
     if (!plan || arrived || !signalRouteKey) {
@@ -180,26 +285,23 @@ export function EnRouteScreen() {
 
   const selectedSpeed = speedOptions.find((option) => option.id === speedMode) ?? speedOptions[1];
   const adjustedDeltaSeconds = scaleSpeedDelta(selectedSpeed.deltaSeconds, progress);
-  const adjustedExpectedArrival = new Date(plan.expectedArrival.getTime() + adjustedDeltaSeconds * 1000);
+  const signalDelaySeconds =
+    simulation.accumulatedSignalDelaySeconds + (simulation.signalWait?.addedDelaySeconds ?? 0);
+  const adjustedExpectedArrival = new Date(
+    plan.expectedArrival.getTime() + (adjustedDeltaSeconds + signalDelaySeconds) * 1000,
+  );
   const adjustedDeviation = Math.round(
     (adjustedExpectedArrival.getTime() - plan.targetArrival.getTime()) / 60000,
   );
-  const elapsedJourneySeconds = (Math.min(progress, 100) / 100) * plan.totalDuration;
+  const elapsedJourneySeconds = simulation.elapsedSeconds;
   const progressState = getProgressState(plan.segments, elapsedJourneySeconds);
   const upcomingSegments = arrived ? [] : plan.segments.slice(progressState.currentIndex + 1, progressState.currentIndex + 4);
   const remainingWalkingDistance = getRemainingWalkingDistance(plan.segments, elapsedJourneySeconds);
   const nextEvent = getNextEvent(plan.segments, elapsedJourneySeconds);
   const interpolatedPosition = interpolateRoutePosition(plan.segments, progress);
-  const activeSignal = activeSignalInfo
-    ? {
-        ...activeSignalInfo.signal,
-        remainingSeconds: Math.max(
-          0,
-          activeSignalInfo.signal.remainingSeconds - (signalNow - activeSignalInfo.fetchedAt) / 1000,
-        ),
-      }
-    : null;
+  const activeSignal = getCurrentSignal(activeSignalInfo, signalNow);
   const crossingAdvice = activeSignal ? adviseCrossing(activeSignal) : null;
+  const demoSpeedLabel = `x${demoSpeedMultiplier.toFixed(1)}`;
 
   const endRoute = () => {
     clearSearch();
@@ -269,14 +371,18 @@ export function EnRouteScreen() {
         <section aria-label="실시간 이동 요약" className="absolute left-5 right-5 top-5 z-20 flex flex-col gap-4">
           <ActionCard
             icon={Zap}
-            title={arrived ? "목적지에 도착했습니다" : getSpeedActionTitle(speedMode)}
-            description={arrived ? "경로가 완료되었습니다. 이동 기록은 최근 경로에 유지됩니다." : getSpeedDescription(speedMode, adjustedDeviation)}
-            variant={arrived || adjustedDeviation <= 0 ? "success" : "warning"}
+            title={getLiveActionTitle(arrived, simulation, speedMode)}
+            description={getLiveActionDescription(arrived, simulation, speedMode, adjustedDeviation)}
+            variant={simulation.signalWait ? "warning" : arrived || adjustedDeviation <= 0 ? "success" : "warning"}
           >
             <div className="mt-3 border-t border-white/20 pt-3">
               <div className="flex items-center justify-between text-sm">
                 <span className="opacity-90">다음 재계산 지점</span>
-                <span className="font-semibold">{nextEvent?.label ?? "도착 완료"}</span>
+                <span className="font-semibold">
+                  {simulation.signalWait
+                    ? `신호 대기 중 · ${Math.ceil(simulation.signalWait.remainingDemoSeconds)}초`
+                    : nextEvent?.label ?? "도착 완료"}
+                </span>
               </div>
             </div>
           </ActionCard>
@@ -292,8 +398,29 @@ export function EnRouteScreen() {
 
           <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-lg">
             <div className="mb-2 flex items-center justify-between">
-              <span className="text-sm text-neutral-600">이동 진행도</span>
-              <span className="text-sm font-semibold text-blue-600">{Math.round(progress)}% 완료</span>
+              <div>
+                <div className="text-sm text-neutral-600">이동 진행도</div>
+                <div className="text-xs font-semibold text-blue-600">
+                  데모 시뮬레이션 · 데모 배속 {demoSpeedLabel}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  setSimulation((current) => ({
+                    ...current,
+                    manualPaused: !current.manualPaused,
+                  }))
+                }
+                className="flex items-center gap-1 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs font-semibold text-neutral-700"
+              >
+                {simulation.manualPaused ? (
+                  <Play className="size-3.5" aria-hidden="true" />
+                ) : (
+                  <Pause className="size-3.5" aria-hidden="true" />
+                )}
+                {simulation.manualPaused ? "재생" : "일시정지"}
+              </button>
             </div>
             <div className="h-2 w-full overflow-hidden rounded-full bg-neutral-100">
               <div
@@ -303,6 +430,7 @@ export function EnRouteScreen() {
             </div>
             <div className="mt-2 flex items-center justify-between text-xs text-neutral-500">
               <span>{plan.request.origin}</span>
+              <span className="font-semibold text-blue-600">{Math.round(progress)}% 완료</span>
               <span>{plan.request.destination}</span>
             </div>
           </div>
@@ -434,7 +562,9 @@ export function EnRouteScreen() {
               <div className="flex flex-col gap-2">
                 {speedOptions.map((option) => {
                   const optionDeltaSeconds = scaleSpeedDelta(option.deltaSeconds, progress);
-                  const optionArrival = new Date(plan.expectedArrival.getTime() + optionDeltaSeconds * 1000);
+                  const optionArrival = new Date(
+                    plan.expectedArrival.getTime() + (optionDeltaSeconds + signalDelaySeconds) * 1000,
+                  );
                   const optionDeviation = Math.round(
                     (optionArrival.getTime() - plan.targetArrival.getTime()) / 60000,
                   );
@@ -560,8 +690,13 @@ function SignalStatusCard({
         ? "bg-red-50 text-red-700 border-red-200"
         : "bg-neutral-50 text-neutral-700 border-neutral-200";
   const stateLabel = signal.state === "green" ? "녹색" : signal.state === "red" ? "적색" : "확인 중";
-  const isExpiring = signal.remainingSeconds <= 0;
-  const remainingLabel = isExpiring ? "변경 임박" : `${Math.ceil(signal.remainingSeconds)}초`;
+  const isExpiring = typeof signal.remainingSeconds === "number" && signal.remainingSeconds <= 0;
+  const remainingLabel =
+    signal.remainingSeconds === null
+      ? "잔여시간 정보 없음"
+      : isExpiring
+        ? "곧 변경"
+        : `${Math.ceil(signal.remainingSeconds)}초`;
 
   return (
     <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-lg">
@@ -596,8 +731,8 @@ function SignalStatusCard({
 
 function selectPedestrianSignal(signals: PedestrianSignal[]): PedestrianSignal | null {
   return (
-    signals.find((signal) => signal.state === "green") ??
     signals.find((signal) => signal.state === "red") ??
+    signals.find((signal) => signal.state === "green") ??
     signals[0] ??
     null
   );
@@ -616,6 +751,58 @@ function formatSignalDirection(direction: string): string {
   };
 
   return labels[direction] ?? "보행 신호";
+}
+
+function getCurrentSignal(info: ActiveSignalInfo | null, nowMs: number): PedestrianSignal | null {
+  if (!info) {
+    return null;
+  }
+
+  if (info.signal.remainingSeconds === null) {
+    return info.signal;
+  }
+
+  return {
+    ...info.signal,
+    remainingSeconds: Math.max(0, info.signal.remainingSeconds - (nowMs - info.fetchedAt) / 1000),
+  };
+}
+
+function getLiveActionTitle(arrived: boolean, simulation: SimulationState, speedMode: SpeedMode): string {
+  if (arrived) {
+    return "목적지에 도착했습니다";
+  }
+
+  if (simulation.signalWait) {
+    return "횡단보도 신호 대기 중";
+  }
+
+  if (simulation.manualPaused) {
+    return "데모 시뮬레이션 일시정지";
+  }
+
+  return getSpeedActionTitle(speedMode);
+}
+
+function getLiveActionDescription(
+  arrived: boolean,
+  simulation: SimulationState,
+  speedMode: SpeedMode,
+  deviation: number,
+): string {
+  if (arrived) {
+    return "경로가 완료되었습니다. 이동 기록은 최근 경로에 유지됩니다.";
+  }
+
+  if (simulation.signalWait) {
+    return `신호 대기 중 · ${Math.ceil(simulation.signalWait.remainingDemoSeconds)}초 후 다시 이동합니다.`;
+  }
+
+  if (simulation.manualPaused) {
+    return "재생을 누르면 데모 시뮬레이션이 이어집니다.";
+  }
+
+  return getSpeedDescription(speedMode, deviation);
 }
 
 function getSpeedActionTitle(mode: SpeedMode): string {

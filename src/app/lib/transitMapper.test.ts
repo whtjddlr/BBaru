@@ -40,6 +40,9 @@ describe("transitMapper", () => {
     expect(mapped.segments[1].line).toBe("2호선");
     expect(mapped.segments[1].routeColor).toBe("#009D3E");
     expect(mapped.segments[1].stationCount).toBe(2);
+    expect(mapped.segments[2].crossings?.length).toBe(2);
+    expect(mapped.segments[2].crossings?.[0].description.includes("횡단보도")).toBe(true);
+    expect(mapped.segments[2].crossings?.[0].position).toEqual({ lat: 37.50441, lng: 127.04864 });
   });
 
   it("maps bus itineraries as alternatives with fare and crossing metadata", () => {

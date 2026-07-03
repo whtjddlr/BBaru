@@ -22,13 +22,14 @@ export type PedestrianSignalState = "green" | "red" | "unknown";
 export interface PedestrianSignal {
   direction: string;
   state: PedestrianSignalState;
-  remainingSeconds: number;
+  remainingSeconds: number | null;
 }
 
 export interface CrossingAdvice {
   action: "go" | "wait" | "unknown";
   message: string;
   waitSeconds?: number;
+  nextGreenInSeconds?: number;
 }
 
 export interface SignalRealtimeItem {
@@ -132,9 +133,10 @@ export function parsePedestrianSignals(item: SignalRealtimeItem | null | undefin
   return DIRECTION_PREFIXES.flatMap((direction) => {
     const remainingValue = item[`${direction}PdsgRmndCs`];
     const stateValue = item[`${direction}PdsgSttsNm`];
+    const hasState = String(stateValue ?? "").trim().length > 0;
     const remainingSeconds = parseRemainingSeconds(remainingValue);
 
-    if (remainingSeconds === null || !String(stateValue ?? "").trim()) {
+    if (!hasState || remainingSeconds === "expired") {
       return [];
     }
 
@@ -224,6 +226,13 @@ export function adviseCrossing(
     };
   }
 
+  if (signal.remainingSeconds === null) {
+    return {
+      action: signal.state === "green" ? "go" : "wait",
+      message: `보행 신호 ${signal.state === "green" ? "녹색" : "적색"} · 잔여시간 미제공`,
+    };
+  }
+
   const waitSeconds = Math.max(0, Math.ceil(signal.remainingSeconds));
 
   if (signal.remainingSeconds <= 0) {
@@ -238,22 +247,22 @@ export function adviseCrossing(
     if (signal.remainingSeconds >= estimatedCrossingSeconds) {
       return {
         action: "go",
-        message: "지금 건너세요.",
+        message: `지금 건너세요 (잔여 ${waitSeconds}초).`,
         waitSeconds: 0,
       };
     }
 
     return {
       action: "wait",
-      message: "다음 신호를 기다리세요. 무리하지 마세요.",
-      waitSeconds,
+      message: "이번 신호는 무리입니다. 다음 신호를 기다리세요.",
     };
   }
 
   return {
     action: "wait",
-    message: `약 ${waitSeconds}초 후 신호 변경 예상, 대기하세요.`,
+    message: `약 ${waitSeconds}초 후 보행 신호로 바뀝니다. 대기하세요.`,
     waitSeconds,
+    nextGreenInSeconds: waitSeconds,
   };
 }
 
@@ -286,7 +295,7 @@ function parseCrossroad(item: CrossroadApiItem): Crossroad | null {
   };
 }
 
-function parseRemainingSeconds(value: unknown): number | null {
+function parseRemainingSeconds(value: unknown): number | null | "expired" {
   const rawValue = String(value ?? "").trim();
 
   if (!rawValue) {
@@ -295,8 +304,12 @@ function parseRemainingSeconds(value: unknown): number | null {
 
   const centiseconds = Number(rawValue);
 
-  if (!Number.isFinite(centiseconds) || centiseconds <= 0) {
+  if (!Number.isFinite(centiseconds)) {
     return null;
+  }
+
+  if (centiseconds <= 0) {
+    return "expired";
   }
 
   return centiseconds / 100;

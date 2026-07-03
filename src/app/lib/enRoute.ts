@@ -1,4 +1,5 @@
 import type { GeoPoint, RouteSegment } from "./eta";
+import type { PedestrianSignal } from "./signal";
 
 export interface JourneyProgressState {
   currentIndex: number;
@@ -9,6 +10,21 @@ export interface JourneyProgressState {
 export interface NextJourneyEvent {
   label: string;
   secondsUntil: number;
+}
+
+export interface CrossingWaitTrigger {
+  id: string;
+  segmentId: string;
+  elapsedSeconds: number;
+  position?: GeoPoint;
+  description: string;
+}
+
+export interface SignalWaitDecision {
+  shouldWait: boolean;
+  demoWaitSeconds: number;
+  realDelaySeconds: number;
+  reason: "red_with_timer" | "red_without_timer" | "pass";
 }
 
 export function scaleSpeedDelta(deltaSeconds: number, progressPercent: number): number {
@@ -123,4 +139,129 @@ export function interpolateRoutePosition(segments: RouteSegment[], progressPerce
     lat: start.lat + (end.lat - start.lat) * ratio,
     lng: start.lng + (end.lng - start.lng) * ratio,
   };
+}
+
+export function getDemoDurationSeconds(seed: number): number {
+  return 60 + (seed % 30);
+}
+
+export function getDemoSpeedMultiplier(totalDuration: number, seed: number): number {
+  const demoDurationSeconds = getDemoDurationSeconds(seed);
+
+  return Math.max(1, totalDuration / demoDurationSeconds);
+}
+
+export function compressSignalWaitSeconds(
+  remainingSeconds: number | null | undefined,
+  demoSpeedMultiplier: number,
+  fallbackDemoSeconds = 5,
+  maxDemoSeconds = 8,
+): number {
+  if (typeof remainingSeconds !== "number" || remainingSeconds <= 0) {
+    return fallbackDemoSeconds;
+  }
+
+  return Math.max(1, Math.min(maxDemoSeconds, Math.ceil(remainingSeconds / Math.max(1, demoSpeedMultiplier))));
+}
+
+export function getSignalWaitDecision(
+  signal: Pick<PedestrianSignal, "state" | "remainingSeconds"> | null | undefined,
+  demoSpeedMultiplier: number,
+): SignalWaitDecision {
+  if (!signal || signal.state !== "red") {
+    return {
+      shouldWait: false,
+      demoWaitSeconds: 0,
+      realDelaySeconds: 0,
+      reason: "pass",
+    };
+  }
+
+  const hasRemaining = typeof signal.remainingSeconds === "number" && signal.remainingSeconds > 0;
+
+  return {
+    shouldWait: true,
+    demoWaitSeconds: compressSignalWaitSeconds(signal.remainingSeconds, demoSpeedMultiplier),
+    realDelaySeconds: hasRemaining ? signal.remainingSeconds : 20,
+    reason: hasRemaining ? "red_with_timer" : "red_without_timer",
+  };
+}
+
+export function getCrossingWaitTriggers(segments: RouteSegment[]): CrossingWaitTrigger[] {
+  let accumulated = 0;
+  const triggers: CrossingWaitTrigger[] = [];
+
+  segments.forEach((segment, index) => {
+    const segmentStart = accumulated;
+    const segmentEnd = segmentStart + segment.duration;
+    accumulated = segmentEnd;
+
+    if (!isWalkingSegment(segment)) {
+      return;
+    }
+
+    if (segment.crossings?.length) {
+      segment.crossings.forEach((crossing, crossingIndex) => {
+        const progressRatio = estimateGeometryProgress(segment.geometry, crossing.position);
+
+        triggers.push({
+          id: `${segment.id}:crossing:${crossingIndex}`,
+          segmentId: segment.id,
+          elapsedSeconds: segmentStart + segment.duration * progressRatio,
+          position: crossing.position,
+          description: crossing.description,
+        });
+      });
+
+      return;
+    }
+
+    if (index < segments.length - 1) {
+      triggers.push({
+        id: `${segment.id}:boundary`,
+        segmentId: segment.id,
+        elapsedSeconds: segmentEnd,
+        position: segment.geometry?.[segment.geometry.length - 1],
+        description: "도보 구간 종료 지점",
+      });
+    }
+  });
+
+  return triggers.sort((first, second) => first.elapsedSeconds - second.elapsedSeconds);
+}
+
+export function findCrossedWaitTrigger(
+  triggers: CrossingWaitTrigger[],
+  previousElapsedSeconds: number,
+  nextElapsedSeconds: number,
+  handledTriggerIds: Set<string>,
+): CrossingWaitTrigger | null {
+  return (
+    triggers.find(
+      (trigger) =>
+        !handledTriggerIds.has(trigger.id) &&
+        trigger.elapsedSeconds > previousElapsedSeconds &&
+        trigger.elapsedSeconds <= nextElapsedSeconds,
+    ) ?? null
+  );
+}
+
+function estimateGeometryProgress(geometry: GeoPoint[] | undefined, position: GeoPoint): number {
+  if (!geometry || geometry.length < 2) {
+    return 1;
+  }
+
+  let nearestIndex = 0;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+
+  geometry.forEach((point, index) => {
+    const distance = Math.hypot(point.lat - position.lat, point.lng - position.lng);
+
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestIndex = index;
+    }
+  });
+
+  return Math.max(0, Math.min(1, nearestIndex / (geometry.length - 1)));
 }

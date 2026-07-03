@@ -125,6 +125,7 @@ function mapLegToSegment(leg: TmapLeg, index: number, legCount: number): RouteSe
       duration: leg.sectionTime,
       distance: leg.distance,
       geometry: collectWalkGeometry(leg),
+      crossings: collectWalkCrossings(leg),
       detail: createWalkDetail(leg),
     };
   }
@@ -168,6 +169,27 @@ function countCrossings(leg: TmapLeg): number {
 
 function collectWalkGeometry(leg: TmapLeg): GeoPoint[] {
   return (leg.steps ?? []).flatMap((step) => parseLinestring(step.linestring));
+}
+
+function collectWalkCrossings(leg: TmapLeg): RouteSegment["crossings"] {
+  const crossings = (leg.steps ?? [])
+    .filter((step) => step.description?.includes("횡단보도"))
+    .map((step) => {
+      const points = parseLinestring(step.linestring);
+      const position = points[Math.floor(points.length / 2)] ?? points[0];
+
+      if (!position) {
+        return null;
+      }
+
+      return {
+        description: step.description ?? "횡단보도",
+        position,
+      };
+    })
+    .filter((crossing): crossing is NonNullable<RouteSegment["crossings"]>[number] => Boolean(crossing));
+
+  return crossings.length > 0 ? crossings : undefined;
 }
 
 function createWalkDetail(leg: TmapLeg): string {

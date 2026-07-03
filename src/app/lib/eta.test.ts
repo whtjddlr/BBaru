@@ -10,9 +10,13 @@ import {
 } from "./eta.ts";
 import type { EtaMode, RouteSegment } from "./eta.ts";
 import {
+  findCrossedWaitTrigger,
+  getCrossingWaitTriggers,
+  getSignalWaitDecision,
   getNextEvent,
   getRemainingWalkingDistance,
   interpolateRoutePosition,
+  compressSignalWaitSeconds,
   scaleSpeedDelta,
 } from "./enRoute.ts";
 
@@ -165,6 +169,78 @@ describe("en-route helpers", () => {
 
     expect(interpolateRoutePosition(routeSegments, 50)).toEqual({ lat: 38, lng: 128 });
     expect(interpolateRoutePosition(routeSegments, 100)).toEqual({ lat: 39, lng: 129 });
+  });
+
+  it("creates crossing wait triggers from crossings and walking boundaries", () => {
+    const routeSegments: RouteSegment[] = [
+      {
+        id: "walk",
+        type: "walk",
+        label: "도보",
+        duration: 100,
+        geometry: [
+          { lat: 37, lng: 127 },
+          { lat: 38, lng: 128 },
+          { lat: 39, lng: 129 },
+        ],
+        crossings: [{ description: "횡단보도", position: { lat: 38, lng: 128 } }],
+      },
+      { id: "bus", type: "bus", label: "버스", duration: 100 },
+      { id: "final", type: "final_walk", label: "하차 후 도보", duration: 60 },
+    ];
+    const triggers = getCrossingWaitTriggers(routeSegments);
+
+    expect(triggers.map((trigger) => Math.round(trigger.elapsedSeconds))).toEqual([50]);
+    expect(triggers[0].description).toBe("횡단보도");
+  });
+
+  it("falls back to the walking segment boundary when crossing details are missing", () => {
+    const routeSegments: RouteSegment[] = [
+      { id: "walk", type: "walk", label: "도보", duration: 80 },
+      { id: "bus", type: "bus", label: "버스", duration: 100 },
+    ];
+    const triggers = getCrossingWaitTriggers(routeSegments);
+
+    expect(triggers).toEqual([
+      {
+        id: "walk:boundary",
+        segmentId: "walk",
+        elapsedSeconds: 80,
+        position: undefined,
+        description: "도보 구간 종료 지점",
+      },
+    ]);
+  });
+
+  it("detects a newly crossed wait trigger once", () => {
+    const triggers = [
+      { id: "a", segmentId: "walk", elapsedSeconds: 50, description: "횡단보도" },
+    ];
+    const handled = new Set<string>();
+    const first = findCrossedWaitTrigger(triggers, 40, 60, handled);
+
+    expect(first?.id).toBe("a");
+    handled.add("a");
+    expect(findCrossedWaitTrigger(triggers, 40, 60, handled)).toBeNull();
+  });
+
+  it("compresses signal wait and waits only on red signals", () => {
+    expect(compressSignalWaitSeconds(40, 10)).toBe(4);
+    expect(compressSignalWaitSeconds(90, 10)).toBe(8);
+    expect(compressSignalWaitSeconds(null, 10)).toBe(5);
+    expect(getSignalWaitDecision({ state: "green", remainingSeconds: 20 }, 10).shouldWait).toBe(false);
+    expect(getSignalWaitDecision({ state: "red", remainingSeconds: 40 }, 10)).toEqual({
+      shouldWait: true,
+      demoWaitSeconds: 4,
+      realDelaySeconds: 40,
+      reason: "red_with_timer",
+    });
+    expect(getSignalWaitDecision({ state: "red", remainingSeconds: null }, 10)).toEqual({
+      shouldWait: true,
+      demoWaitSeconds: 5,
+      realDelaySeconds: 20,
+      reason: "red_without_timer",
+    });
   });
 });
 

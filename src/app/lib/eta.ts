@@ -15,6 +15,11 @@ export interface GeoPoint {
 
 export type RouteSegmentType = "walk" | "wait_signal" | "subway" | "bus" | "final_walk";
 
+export interface RouteCrossing {
+  description: string;
+  position: GeoPoint;
+}
+
 export interface RouteSegment {
   id: string;
   type: RouteSegmentType;
@@ -26,6 +31,7 @@ export interface RouteSegment {
   routeColor?: string;
   stationCount?: number;
   geometry?: GeoPoint[];
+  crossings?: RouteCrossing[];
   detail?: string;
 }
 

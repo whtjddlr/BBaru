@@ -421,6 +421,20 @@ function TimelineSegment({ segment, showConnector }: { segment: RouteSegment; sh
             <span className="text-xs text-amber-700">실시간 신호 반영</span>
           </div>
         )}
+        {segment.crossings?.map((crossing, index) => (
+          <div
+            key={`${segment.id}-crossing-${index}`}
+            className="mt-2 flex items-center gap-2 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2"
+          >
+            <AlertTriangle className="size-4 shrink-0 text-amber-600" aria-hidden="true" />
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-semibold text-amber-800">
+                횡단보도 · 실시간 신호 반영 대상
+              </div>
+              <div className="truncate text-[11px] text-amber-700">{crossing.description}</div>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

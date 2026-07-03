@@ -29,7 +29,7 @@ describe("signal parser", () => {
     ]);
   });
 
-  it("handles unknown states and invalid remaining values defensively", () => {
+  it("keeps state-only pedestrian signals and excludes only non-positive remaining values", () => {
     const signals = parsePedestrianSignals({
       crsrdId: "test",
       ntPdsgRmndCs: "2500",
@@ -44,6 +44,7 @@ describe("signal parser", () => {
 
     expect(signals).toEqual([
       { direction: "nt", state: "unknown", remainingSeconds: 25 },
+      { direction: "et", state: "green", remainingSeconds: null },
     ]);
   });
 });
@@ -79,7 +80,7 @@ describe("signal spatial helpers", () => {
     expect(signalCrossroads[0].signals.length).toBe(2);
   });
 
-  it("excludes route-near crossroads when no pedestrian signal has positive remaining time", () => {
+  it("keeps route-near crossroads that have state-only pedestrian signal data", () => {
     const realtimeIndex = new Map<string, SignalRealtimeItem>([
       [
         "1",
@@ -89,6 +90,34 @@ describe("signal spatial helpers", () => {
           etPdsgSttsNm: "stop-And-Remain",
           stPdsgRmndCs: "",
           stPdsgSttsNm: "protected-Movement-Allowed",
+          wtPdsgRmndCs: "-10",
+          wtPdsgSttsNm: "permissive-Movement-Allowed",
+        },
+      ],
+    ]);
+    const signalCrossroads = findSignalCrossroadsForRoute(
+      [{ lat: 37.5231971, lng: 126.9713254 }],
+      crossroads,
+      realtimeIndex,
+      10,
+    );
+
+    expect(signalCrossroads.length).toBe(1);
+    expect(signalCrossroads[0].signals).toEqual([
+      { direction: "st", state: "green", remainingSeconds: null },
+    ]);
+  });
+
+  it("excludes route-near crossroads when no pedestrian direction has a valid state", () => {
+    const realtimeIndex = new Map<string, SignalRealtimeItem>([
+      [
+        "1",
+        {
+          crsrdId: "1",
+          etPdsgRmndCs: "0",
+          etPdsgSttsNm: "stop-And-Remain",
+          stPdsgRmndCs: "",
+          stPdsgSttsNm: "",
           wtPdsgRmndCs: "-10",
           wtPdsgSttsNm: "permissive-Movement-Allowed",
         },
@@ -111,7 +140,7 @@ describe("crossing advice", () => {
       adviseCrossing({ direction: "nt", state: "green", remainingSeconds: 25 }, 20),
     ).toEqual({
       action: "go",
-      message: "지금 건너세요.",
+      message: "지금 건너세요 (잔여 25초).",
       waitSeconds: 0,
     });
   });
@@ -121,8 +150,7 @@ describe("crossing advice", () => {
       adviseCrossing({ direction: "nt", state: "green", remainingSeconds: 8 }, 20),
     ).toEqual({
       action: "wait",
-      message: "다음 신호를 기다리세요. 무리하지 마세요.",
-      waitSeconds: 8,
+      message: "이번 신호는 무리입니다. 다음 신호를 기다리세요.",
     });
   });
 
@@ -131,8 +159,24 @@ describe("crossing advice", () => {
       adviseCrossing({ direction: "nt", state: "red", remainingSeconds: 12.2 }, 20),
     ).toEqual({
       action: "wait",
-      message: "약 13초 후 신호 변경 예상, 대기하세요.",
+      message: "약 13초 후 보행 신호로 바뀝니다. 대기하세요.",
       waitSeconds: 13,
+      nextGreenInSeconds: 13,
+    });
+  });
+
+  it("describes state-only pedestrian signals without countdown advice", () => {
+    expect(
+      adviseCrossing({ direction: "nt", state: "green", remainingSeconds: null }, 20),
+    ).toEqual({
+      action: "go",
+      message: "보행 신호 녹색 · 잔여시간 미제공",
+    });
+    expect(
+      adviseCrossing({ direction: "nt", state: "red", remainingSeconds: null }, 20),
+    ).toEqual({
+      action: "wait",
+      message: "보행 신호 적색 · 잔여시간 미제공",
     });
   });
 
