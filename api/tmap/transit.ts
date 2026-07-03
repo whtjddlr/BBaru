@@ -8,7 +8,7 @@ import {
   validateTransitBody,
   type ApiRequest,
   type ApiResponse,
-} from "../../src/server/proxy";
+} from "../_lib/proxy.js";
 
 export default async function handler(request: ApiRequest, response: ApiResponse) {
   if (!ensureHttpMethod(request, response, "POST")) {

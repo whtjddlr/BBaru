@@ -5,7 +5,7 @@ import {
   validatePoiQuery,
   validateSignalQuery,
   validateTransitBody,
-} from "./proxy.ts";
+} from "../../api/_lib/proxy.js";
 
 describe("proxy request validation", () => {
   it("normalizes POI query input", () => {
