@@ -1,198 +1,173 @@
+import { type ReactNode, useEffect, useState } from "react";
+import { useNavigate } from "react-router";
 import { Search, Clock, MapPin, TrendingUp, Navigation2 } from "lucide-react";
+import { useRouteState } from "../../context/RouteContext";
+import { formatDurationCompact, GeoPoint } from "../../lib/eta";
+import { searchPois, TmapPoi } from "../../lib/tmap";
 
 export function MainScreen() {
-  return (
-    <div className="w-full h-screen bg-[#F8F9FB] relative overflow-hidden">
-      {/* Status Bar */}
-      <div className="absolute top-0 left-0 right-0 h-11 bg-white z-30 flex items-center justify-between px-5 border-b border-neutral-100">
-        <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>9:41</span>
-        <div className="flex items-center gap-1">
-          <div className="w-4 h-3 border border-neutral-900 rounded-sm flex items-end px-0.5">
-            <div className="w-full h-2 bg-neutral-900 rounded-[1px]" />
-          </div>
-        </div>
-      </div>
+  const navigate = useNavigate();
+  const { recentRoutes, searchRequest, startSearch } = useRouteState();
+  const [origin, setOrigin] = useState(searchRequest?.origin ?? "");
+  const [destination, setDestination] = useState(searchRequest?.destination ?? "");
+  const [originPoint, setOriginPoint] = useState<GeoPoint | undefined>(searchRequest?.originPoint);
+  const [destinationPoint, setDestinationPoint] = useState<GeoPoint | undefined>(searchRequest?.destinationPoint);
+  const [targetTime, setTargetTime] = useState(searchRequest?.targetTime ?? getDefaultTargetTime());
+  const originSuggestions = usePoiSuggestions(origin, originPoint);
+  const destinationSuggestions = usePoiSuggestions(destination, destinationPoint);
+  const canSearch = origin.trim().length > 0 && destination.trim().length > 0;
 
-      {/* Header */}
-      <div className="absolute top-11 left-0 right-0 bg-white z-20 border-b border-neutral-200">
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!canSearch) {
+      return;
+    }
+
+    startSearch({ origin, destination, targetTime, originPoint, destinationPoint });
+    navigate("/route");
+  };
+
+  return (
+    <main className="flex h-full min-h-0 w-full flex-col bg-[#F8F9FB]">
+      <header className="shrink-0 border-b border-neutral-200 bg-white">
         <div className="px-5 py-6">
-          <h1 className="text-3xl text-[#1E40AF] mb-1" style={{ fontWeight: 700 }}>SafeETA</h1>
+          <h1 className="mb-1 text-3xl font-bold text-[#1E40AF]">BBARU</h1>
           <p className="text-sm text-neutral-600">정시 도착 최적화</p>
         </div>
-      </div>
+      </header>
 
-      {/* Search Section */}
-      <div className="absolute top-[130px] left-0 right-0 px-5 z-20">
-        <div className="space-y-3">
-          {/* Origin Input */}
-          <div className="flex items-center gap-3 bg-white rounded-xl px-4 py-4 shadow-sm border border-neutral-200">
-            <div className="w-3 h-3 rounded-full bg-blue-600" />
-            <input
-              type="text"
-              placeholder="출발지를 입력하세요"
-              className="flex-1 bg-transparent outline-none text-neutral-900"
-            />
-            <MapPin className="w-5 h-5 text-neutral-400" />
-          </div>
+      <section aria-labelledby="route-search-title" className="shrink-0 px-5 py-4">
+        <h2 id="route-search-title" className="sr-only">경로 검색</h2>
+        <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+          <PoiField
+            id="origin-input"
+            label="출발지"
+            placeholder="출발지를 입력하세요"
+            value={origin}
+            point={originPoint}
+            suggestions={originSuggestions}
+            markerClassName="bg-blue-600"
+            icon={<MapPin className="size-5 text-neutral-400" aria-hidden="true" />}
+            onChange={(value) => {
+              setOrigin(value);
+              setOriginPoint(undefined);
+            }}
+            onSelect={(poi) => {
+              setOrigin(poi.name);
+              setOriginPoint(poi.point);
+            }}
+          />
 
-          {/* Destination Input */}
-          <div className="flex items-center gap-3 bg-white rounded-xl px-4 py-4 shadow-sm border border-neutral-200">
-            <div className="w-3 h-3 rounded-full bg-red-600" />
-            <input
-              type="text"
-              placeholder="도착지를 입력하세요"
-              className="flex-1 bg-transparent outline-none text-neutral-900"
-            />
-            <Search className="w-5 h-5 text-neutral-400" />
-          </div>
+          <PoiField
+            id="destination-input"
+            label="도착지"
+            placeholder="도착지를 입력하세요"
+            value={destination}
+            point={destinationPoint}
+            suggestions={destinationSuggestions}
+            markerClassName="bg-red-600"
+            icon={<Search className="size-5 text-neutral-400" aria-hidden="true" />}
+            onChange={(value) => {
+              setDestination(value);
+              setDestinationPoint(undefined);
+            }}
+            onSelect={(poi) => {
+              setDestination(poi.name);
+              setDestinationPoint(poi.point);
+            }}
+          />
 
-          {/* Target Arrival Time */}
-          <div className="flex items-center gap-3 bg-white rounded-xl px-4 py-4 shadow-sm border border-neutral-200">
-            <Clock className="w-5 h-5 text-blue-600" />
-            <span className="text-sm text-neutral-600 mr-2">목표 도착 시각</span>
+          <label className="flex items-center gap-3 rounded-xl border border-neutral-200 bg-white px-4 py-4 shadow-sm">
+            <Clock className="size-5 text-blue-600" aria-hidden="true" />
+            <span className="mr-2 text-sm text-neutral-600">목표 도착 시각</span>
             <input
               type="time"
-              defaultValue="10:00"
-              className="flex-1 bg-transparent outline-none text-neutral-900 text-lg tabular-nums"
-              style={{ fontWeight: 600 }}
+              value={targetTime}
+              onChange={(event) => setTargetTime(event.target.value)}
+              className="flex-1 bg-transparent text-lg font-semibold tabular-nums text-neutral-900 outline-none"
             />
-          </div>
+          </label>
 
-          {/* Search Button */}
-          <button className="w-full bg-blue-600 text-white rounded-xl py-4 shadow-lg hover:bg-blue-700 transition-colors flex items-center justify-center gap-2">
-            <Navigation2 className="w-5 h-5" />
-            <span style={{ fontWeight: 600 }}>경로 검색</span>
+          <button
+            type="submit"
+            disabled={!canSearch}
+            className={`flex w-full items-center justify-center gap-2 rounded-xl py-4 font-semibold text-white shadow-lg transition-colors ${
+              canSearch ? "bg-blue-600 hover:bg-blue-700" : "cursor-not-allowed bg-neutral-300 shadow-none"
+            }`}
+          >
+            <Navigation2 className="size-5" aria-hidden="true" />
+            <span>경로 검색</span>
           </button>
-        </div>
-      </div>
+        </form>
+      </section>
 
-      {/* Recent Routes */}
-      <div className="absolute top-[430px] left-0 right-0 bottom-0 px-5 overflow-y-auto pb-8">
+      <section aria-labelledby="recent-routes-title" className="min-h-0 flex-1 overflow-y-auto px-5 pb-8">
         <div className="mb-4">
-          <h2 className="text-lg text-neutral-900 mb-3" style={{ fontWeight: 600 }}>최근 경로</h2>
-          <div className="space-y-3">
-            {/* Recent Route 1 */}
-            <button className="w-full bg-white rounded-2xl p-4 shadow-sm border border-neutral-200 hover:border-blue-300 hover:shadow-md transition-all">
-              <div className="flex items-start justify-between mb-3">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="w-2 h-2 rounded-full bg-blue-600" />
-                    <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>
-                      강남역 2번 출구
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-red-600" />
-                    <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>
-                      선릉역
-                    </span>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="text-xs text-neutral-500 mb-1">목표 도착</div>
-                  <div className="text-lg text-neutral-900 tabular-nums" style={{ fontWeight: 700 }}>
-                    10:00
-                  </div>
-                </div>
+          <h2 id="recent-routes-title" className="mb-3 text-lg font-semibold text-neutral-900">최근 경로</h2>
+          <div className="flex flex-col gap-3">
+            {recentRoutes.length === 0 ? (
+              <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+                <p className="text-sm text-neutral-500">아직 저장된 최근 경로가 없습니다.</p>
               </div>
-              <div className="flex items-center justify-between pt-3 border-t border-neutral-100">
-                <span className="text-xs text-neutral-500">약 15분 소요</span>
-                <span className="text-xs text-blue-600" style={{ fontWeight: 600 }}>
-                  다시 사용
-                </span>
-              </div>
-            </button>
-
-            {/* Recent Route 2 */}
-            <button className="w-full bg-white rounded-2xl p-4 shadow-sm border border-neutral-200 hover:border-blue-300 hover:shadow-md transition-all">
-              <div className="flex items-start justify-between mb-3">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="w-2 h-2 rounded-full bg-blue-600" />
-                    <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>
-                      홍대입구역
+            ) : (
+              recentRoutes.map((route) => (
+                <button
+                  key={`${route.origin}-${route.destination}-${route.updatedAt}`}
+                  type="button"
+                  onClick={() => {
+                    startSearch(route);
+                    navigate("/route");
+                  }}
+                  className="w-full rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm transition-all hover:border-blue-300 hover:shadow-md"
+                >
+                  <div className="mb-3 flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="mb-2 flex items-center gap-2">
+                        <span className="size-2 rounded-full bg-blue-600" aria-hidden="true" />
+                        <span className="text-sm font-semibold text-neutral-900">{route.origin}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="size-2 rounded-full bg-red-600" aria-hidden="true" />
+                        <span className="text-sm font-semibold text-neutral-900">{route.destination}</span>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="mb-1 text-xs text-neutral-500">목표 도착</div>
+                      <div className="text-lg font-bold tabular-nums text-neutral-900">{route.targetTime}</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between border-t border-neutral-100 pt-3">
+                    <span className="text-xs text-neutral-500">
+                      약 {formatDurationCompact(route.totalDuration ?? 0)} 소요
                     </span>
+                    <span className="text-xs font-semibold text-blue-600">다시 사용</span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-red-600" />
-                    <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>
-                      합정역
-                    </span>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="text-xs text-neutral-500 mb-1">목표 도착</div>
-                  <div className="text-lg text-neutral-900 tabular-nums" style={{ fontWeight: 700 }}>
-                    14:30
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center justify-between pt-3 border-t border-neutral-100">
-                <span className="text-xs text-neutral-500">약 8분 소요</span>
-                <span className="text-xs text-blue-600" style={{ fontWeight: 600 }}>
-                  다시 사용
-                </span>
-              </div>
-            </button>
-
-            {/* Recent Route 3 */}
-            <button className="w-full bg-white rounded-2xl p-4 shadow-sm border border-neutral-200 hover:border-blue-300 hover:shadow-md transition-all">
-              <div className="flex items-start justify-between mb-3">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="w-2 h-2 rounded-full bg-blue-600" />
-                    <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>
-                      서울역
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-red-600" />
-                    <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>
-                      광화문
-                    </span>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="text-xs text-neutral-500 mb-1">목표 도착</div>
-                  <div className="text-lg text-neutral-900 tabular-nums" style={{ fontWeight: 700 }}>
-                    09:00
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center justify-between pt-3 border-t border-neutral-100">
-                <span className="text-xs text-neutral-500">약 22분 소요</span>
-                <span className="text-xs text-blue-600" style={{ fontWeight: 600 }}>
-                  다시 사용
-                </span>
-              </div>
-            </button>
+                </button>
+              ))
+            )}
           </div>
         </div>
 
-        {/* Quick Tips */}
-        <div className="mt-6">
-          <h3 className="text-base text-neutral-900 mb-3" style={{ fontWeight: 600 }}>SafeETA 활용 팁</h3>
-          <div className="space-y-2">
-            <div className="bg-blue-50 rounded-xl p-3 border border-blue-100">
+        <section aria-labelledby="tips-title" className="mt-6">
+          <h2 id="tips-title" className="mb-3 text-base font-semibold text-neutral-900">BBARU 활용 팁</h2>
+          <div className="flex flex-col gap-2">
+            <div className="rounded-xl border border-blue-100 bg-blue-50 p-3">
               <div className="flex items-start gap-3">
-                <TrendingUp className="w-4 h-4 text-blue-600 mt-0.5" />
+                <TrendingUp className="mt-0.5 size-4 text-blue-600" aria-hidden="true" />
                 <div>
-                  <div className="text-sm text-blue-900 mb-1" style={{ fontWeight: 600 }}>
-                    실시간 신호 반영
-                  </div>
+                  <div className="mb-1 text-sm font-semibold text-blue-900">실시간 신호 반영</div>
                   <div className="text-xs text-blue-700">
                     횡단보도와 지하철 도착 정보를 실시간으로 반영합니다
                   </div>
                 </div>
               </div>
             </div>
-            <div className="bg-emerald-50 rounded-xl p-3 border border-emerald-100">
+            <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
               <div className="flex items-start gap-3">
-                <Clock className="w-4 h-4 text-emerald-600 mt-0.5" />
+                <Clock className="mt-0.5 size-4 text-emerald-600" aria-hidden="true" />
                 <div>
-                  <div className="text-sm text-emerald-900 mb-1" style={{ fontWeight: 600 }}>
-                    정시 도착 최적화
-                  </div>
+                  <div className="mb-1 text-sm font-semibold text-emerald-900">정시 도착 최적화</div>
                   <div className="text-xs text-emerald-700">
                     너무 빠르지도, 늦지도 않게 목표 시각에 정확히 도착합니다
                   </div>
@@ -200,8 +175,122 @@ export function MainScreen() {
               </div>
             </div>
           </div>
+        </section>
+      </section>
+    </main>
+  );
+}
+
+function PoiField({
+  id,
+  label,
+  placeholder,
+  value,
+  point,
+  suggestions,
+  markerClassName,
+  icon,
+  onChange,
+  onSelect,
+}: {
+  id: string;
+  label: string;
+  placeholder: string;
+  value: string;
+  point?: GeoPoint;
+  suggestions: TmapPoi[];
+  markerClassName: string;
+  icon: ReactNode;
+  onChange: (value: string) => void;
+  onSelect: (poi: TmapPoi) => void;
+}) {
+  return (
+    <div className="relative">
+      <label
+        htmlFor={id}
+        className="flex items-center gap-3 rounded-xl border border-neutral-200 bg-white px-4 py-4 shadow-sm"
+      >
+        <span className={`size-3 rounded-full ${markerClassName}`} aria-hidden="true" />
+        <span className="sr-only">{label}</span>
+        <input
+          id={id}
+          type="text"
+          placeholder={placeholder}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          autoComplete="off"
+          className="flex-1 bg-transparent text-neutral-900 outline-none"
+        />
+        {icon}
+      </label>
+
+      {point && (
+        <div className="mt-1 px-4 text-xs text-blue-600">좌표 확정됨</div>
+      )}
+
+      {suggestions.length > 0 && (
+        <div className="absolute left-0 right-0 top-full z-40 mt-2 overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-xl">
+          {suggestions.map((poi) => (
+            <button
+              key={`${poi.name}-${poi.point.lat}-${poi.point.lng}`}
+              type="button"
+              onClick={() => onSelect(poi)}
+              className="flex w-full items-center gap-3 border-b border-neutral-100 px-4 py-3 text-left last:border-b-0 hover:bg-blue-50"
+            >
+              <MapPin className="size-4 shrink-0 text-blue-600" aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate text-sm font-semibold text-neutral-900">
+                {poi.name}
+              </span>
+            </button>
+          ))}
         </div>
-      </div>
+      )}
     </div>
   );
+}
+
+function usePoiSuggestions(query: string, selectedPoint?: GeoPoint): TmapPoi[] {
+  const [suggestions, setSuggestions] = useState<TmapPoi[]>([]);
+
+  useEffect(() => {
+    const trimmedQuery = query.trim();
+
+    if (trimmedQuery.length < 2 || selectedPoint) {
+      setSuggestions([]);
+      return undefined;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      searchPois(trimmedQuery, 5)
+        .then((pois) => {
+          if (!cancelled) {
+            setSuggestions(pois);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setSuggestions([]);
+          }
+        });
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [query, selectedPoint]);
+
+  return suggestions;
+}
+
+function getDefaultTargetTime(): string {
+  const now = new Date();
+  const target = new Date(now.getTime() + 45 * 60 * 1000);
+
+  if (target.getDate() !== now.getDate()) {
+    return "23:59";
+  }
+
+  return `${String(target.getHours()).padStart(2, "0")}:${String(target.getMinutes()).padStart(2, "0")}`;
 }

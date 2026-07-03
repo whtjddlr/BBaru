@@ -1,255 +1,668 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router";
+import confetti from "canvas-confetti";
 import { ArrowLeft, Clock, Navigation, AlertCircle, Zap, Timer, TrendingUp } from "lucide-react";
 import { MapView } from "../MapView";
 import { BottomSheet } from "../BottomSheet";
 import { StatusBadge } from "../StatusBadge";
 import { ActionCard } from "../ActionCard";
-import { TimeDisplay } from "../TimeDisplay";
+import { RoutePlanState, useRouteState } from "../../context/RouteContext";
+import {
+  createEtaPlan,
+  deviationBadgeVariant,
+  EtaMode,
+  EtaPlan,
+  formatClock,
+  formatDeviation,
+  formatDuration,
+  RouteSegment,
+} from "../../lib/eta";
+import {
+  getNextEvent,
+  getProgressState,
+  getRemainingWalkingDistance,
+  interpolateRoutePosition,
+  scaleSpeedDelta,
+} from "../../lib/enRoute";
+import {
+  adviseCrossing,
+  createWalkingRouteSignalKey,
+  fetchCrossroads,
+  fetchRealtimeSignals,
+  findSignalCrossroadsForRoute,
+  getWalkingRoutePoints,
+} from "../../lib/signal";
+import type { CrossingAdvice, PedestrianSignal } from "../../lib/signal";
+import { mapTransitResponseToPlan } from "../../lib/transitMapper";
+
+type SpeedMode = "fast" | "steady" | "relaxed";
+
+const speedOptions: Array<{
+  id: SpeedMode;
+  title: string;
+  deltaSeconds: number;
+}> = [
+  { id: "fast", title: "조금 더 빠르게 이동", deltaSeconds: -120 },
+  { id: "steady", title: "현재 속도 유지 (권장)", deltaSeconds: 0 },
+  { id: "relaxed", title: "여유롭게 이동", deltaSeconds: 180 },
+];
+
+interface ActiveSignalInfo {
+  crossroadName: string;
+  distanceMeters: number;
+  signal: PedestrianSignal;
+  fetchedAt: number;
+}
 
 export function EnRouteScreen() {
-  return (
-    <div className="w-full h-screen bg-[#F8F9FB] relative overflow-hidden">
-      {/* Status Bar */}
-      <div className="absolute top-0 left-0 right-0 h-11 bg-blue-600 z-30 flex items-center justify-between px-5">
-        <span className="text-sm text-white" style={{ fontWeight: 600 }}>9:41</span>
-        <div className="flex items-center gap-1">
-          <div className="w-4 h-3 border border-white rounded-sm flex items-end px-0.5">
-            <div className="w-full h-2 bg-white rounded-[1px]" />
-          </div>
-        </div>
-      </div>
+  const navigate = useNavigate();
+  const { clearSearch, searchRequest, selectedMode, routePlanState } = useRouteState();
+  const [progress, setProgress] = useState(0);
+  const [speedMode, setSpeedMode] = useState<SpeedMode>("steady");
+  const [activeSignalInfo, setActiveSignalInfo] = useState<ActiveSignalInfo | null>(null);
+  const [signalNow, setSignalNow] = useState(() => Date.now());
+  const celebratedRef = useRef(false);
+  const plan = useMemo(() => {
+    if (!searchRequest) {
+      return null;
+    }
 
-      {/* Navigation Header */}
-      <div className="absolute top-11 left-0 right-0 bg-blue-600 z-30">
+    const planRequest = routePlanState.status === "success" ? routePlanState.request : searchRequest;
+
+    return buildPlanForMode(planRequest, routePlanState, selectedMode, new Date());
+  }, [routePlanState, searchRequest, selectedMode]);
+
+  useEffect(() => {
+    if (!plan) {
+      return undefined;
+    }
+
+    const demoDurationMs = 60000 + (plan.seed % 30000);
+    const startedAt = Date.now();
+    setProgress(0);
+    celebratedRef.current = false;
+
+    const timer = window.setInterval(() => {
+      const nextProgress = Math.min(100, ((Date.now() - startedAt) / demoDurationMs) * 100);
+      setProgress(nextProgress);
+
+      if (nextProgress >= 100) {
+        window.clearInterval(timer);
+      }
+    }, 500);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [plan]);
+
+  const arrived = progress >= 100;
+  const signalRouteKey = plan ? createWalkingRouteSignalKey(plan.segments) : "";
+
+  useEffect(() => {
+    if (!arrived || celebratedRef.current) {
+      return;
+    }
+
+    celebratedRef.current = true;
+    confetti({ particleCount: 100, spread: 70, origin: { y: 0.35 } });
+  }, [arrived]);
+
+  useEffect(() => {
+    if (!plan || arrived || !signalRouteKey) {
+      setActiveSignalInfo(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const updateSignalInfo = async () => {
+      const routePoints = getWalkingRoutePoints(plan.segments);
+
+      if (routePoints.length === 0) {
+        if (!cancelled) {
+          setActiveSignalInfo(null);
+        }
+        return;
+      }
+
+      const [crossroads, realtimeSignals] = await Promise.all([fetchCrossroads(), fetchRealtimeSignals()]);
+      const [nearestSignalCrossroad] = findSignalCrossroadsForRoute(routePoints, crossroads, realtimeSignals);
+      const selectedSignal = nearestSignalCrossroad
+        ? selectPedestrianSignal(nearestSignalCrossroad.signals)
+        : null;
+
+      if (cancelled) {
+        return;
+      }
+
+      setSignalNow(Date.now());
+      setActiveSignalInfo(
+        nearestSignalCrossroad && selectedSignal
+          ? {
+              crossroadName: nearestSignalCrossroad.crossroad.name,
+              distanceMeters: nearestSignalCrossroad.crossroad.distanceMeters,
+              signal: selectedSignal,
+              fetchedAt: Date.now(),
+            }
+          : null,
+      );
+    };
+
+    void updateSignalInfo();
+    const timer = window.setInterval(() => {
+      void updateSignalInfo();
+    }, 15000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [arrived, signalRouteKey]);
+
+  useEffect(() => {
+    if (!activeSignalInfo || arrived) {
+      return undefined;
+    }
+
+    const timer = window.setInterval(() => {
+      setSignalNow(Date.now());
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [activeSignalInfo, arrived]);
+
+  if (!plan) {
+    return null;
+  }
+
+  const selectedSpeed = speedOptions.find((option) => option.id === speedMode) ?? speedOptions[1];
+  const adjustedDeltaSeconds = scaleSpeedDelta(selectedSpeed.deltaSeconds, progress);
+  const adjustedExpectedArrival = new Date(plan.expectedArrival.getTime() + adjustedDeltaSeconds * 1000);
+  const adjustedDeviation = Math.round(
+    (adjustedExpectedArrival.getTime() - plan.targetArrival.getTime()) / 60000,
+  );
+  const elapsedJourneySeconds = (Math.min(progress, 100) / 100) * plan.totalDuration;
+  const progressState = getProgressState(plan.segments, elapsedJourneySeconds);
+  const upcomingSegments = arrived ? [] : plan.segments.slice(progressState.currentIndex + 1, progressState.currentIndex + 4);
+  const remainingWalkingDistance = getRemainingWalkingDistance(plan.segments, elapsedJourneySeconds);
+  const nextEvent = getNextEvent(plan.segments, elapsedJourneySeconds);
+  const interpolatedPosition = interpolateRoutePosition(plan.segments, progress);
+  const activeSignal = activeSignalInfo
+    ? {
+        ...activeSignalInfo.signal,
+        remainingSeconds: Math.max(
+          0,
+          activeSignalInfo.signal.remainingSeconds - (signalNow - activeSignalInfo.fetchedAt) / 1000,
+        ),
+      }
+    : null;
+  const crossingAdvice = activeSignal ? adviseCrossing(activeSignal) : null;
+
+  const endRoute = () => {
+    clearSearch();
+    navigate("/");
+  };
+
+  return (
+    <div className="flex h-full min-h-0 w-full flex-col bg-[#F8F9FB]">
+      <header className="z-30 shrink-0 bg-blue-600">
         <div className="px-5 py-4">
-          <div className="flex items-center justify-between mb-3">
-            <button className="p-2 -ml-2 hover:bg-blue-500 rounded-lg transition-colors">
-              <ArrowLeft className="w-5 h-5 text-white" />
+          <div className="mb-3 flex items-center justify-between">
+            <button
+              type="button"
+              aria-label="경로 결과로 돌아가기"
+              onClick={() => navigate("/route")}
+              className="-ml-2 rounded-lg p-2 transition-colors hover:bg-blue-500"
+            >
+              <ArrowLeft className="size-5 text-white" aria-hidden="true" />
             </button>
-            <button className="px-4 py-2 bg-white/20 backdrop-blur-sm rounded-lg text-white text-sm" style={{ fontWeight: 600 }}>
+            <button
+              type="button"
+              onClick={endRoute}
+              className="rounded-lg bg-white/20 px-4 py-2 text-sm font-semibold text-white backdrop-blur-sm"
+            >
               경로 종료
             </button>
           </div>
           <div className="flex items-center gap-3">
-            <Navigation className="w-6 h-6 text-white" />
-            <div className="flex-1">
-              <div className="text-white text-sm mb-1">선릉역까지</div>
-              <div className="text-2xl text-white tabular-nums" style={{ fontWeight: 700 }}>09:57 도착 예정</div>
+            <Navigation className="size-6 text-white" aria-hidden="true" />
+            <div className="min-w-0 flex-1">
+              <div className="mb-1 text-sm text-white">{plan.request.destination}까지</div>
+              <div className="truncate text-2xl font-bold tabular-nums text-white">
+                {arrived ? "도착 완료" : `${formatClock(adjustedExpectedArrival)} 도착 예정`}
+              </div>
             </div>
-            <StatusBadge variant="early">3분 빠름</StatusBadge>
+            <StatusBadge variant={arrived ? "ontime" : deviationBadgeVariant(adjustedDeviation)}>
+              {arrived ? "완료" : formatDeviation(adjustedDeviation)}
+            </StatusBadge>
           </div>
         </div>
-      </div>
+      </header>
 
-      {/* Map with Current Position */}
-      <div className="absolute inset-0 top-[165px]">
-        <MapView
-          origin={{ lat: 1, lng: 1, name: "강남역 2번 출구" }}
-          destination={{ lat: 2, lng: 2, name: "선릉역" }}
-          currentPosition={{ lat: 1.5, lng: 1.5 }}
-          showRoute
-        />
-      </div>
+      <main className="relative min-h-0 flex-1 overflow-hidden">
+        <div className="absolute inset-0">
+          <MapView
+            origin={{
+              lat: plan.request.originPoint?.lat ?? 1,
+              lng: plan.request.originPoint?.lng ?? 1,
+              name: plan.request.origin,
+            }}
+            destination={{
+              lat: plan.request.destinationPoint?.lat ?? 2,
+              lng: plan.request.destinationPoint?.lng ?? 2,
+              name: plan.request.destination,
+            }}
+            currentPosition={
+              interpolatedPosition ?? {
+                lat: (plan.request.originPoint?.lat ?? 1) + progress / 100,
+                lng: (plan.request.originPoint?.lng ?? 1) + progress / 100,
+              }
+            }
+            route={plan.segments}
+            showRoute
+          />
+        </div>
 
-      {/* Real-time Action Alert */}
-      <div className="absolute top-[185px] left-5 right-5 z-20">
-        <ActionCard
-          icon={Zap}
-          title="지금 속도 유지하세요"
-          description="현재 페이스대로 가면 목표 시각에 정확히 도착합니다"
-          variant="success"
-        >
-          <div className="mt-3 pt-3 border-t border-white/20">
-            <div className="flex items-center justify-between text-sm">
-              <span className="opacity-90">다음 재계산 지점</span>
-              <span style={{ fontWeight: 600 }}>횡단보도 (120m)</span>
+        <section aria-label="실시간 이동 요약" className="absolute left-5 right-5 top-5 z-20 flex flex-col gap-4">
+          <ActionCard
+            icon={Zap}
+            title={arrived ? "목적지에 도착했습니다" : getSpeedActionTitle(speedMode)}
+            description={arrived ? "경로가 완료되었습니다. 이동 기록은 최근 경로에 유지됩니다." : getSpeedDescription(speedMode, adjustedDeviation)}
+            variant={arrived || adjustedDeviation <= 0 ? "success" : "warning"}
+          >
+            <div className="mt-3 border-t border-white/20 pt-3">
+              <div className="flex items-center justify-between text-sm">
+                <span className="opacity-90">다음 재계산 지점</span>
+                <span className="font-semibold">{nextEvent?.label ?? "도착 완료"}</span>
+              </div>
+            </div>
+          </ActionCard>
+
+          {activeSignalInfo && activeSignal && crossingAdvice && (
+            <SignalStatusCard
+              crossroadName={activeSignalInfo.crossroadName}
+              distanceMeters={activeSignalInfo.distanceMeters}
+              signal={activeSignal}
+              advice={crossingAdvice}
+            />
+          )}
+
+          <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-lg">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm text-neutral-600">이동 진행도</span>
+              <span className="text-sm font-semibold text-blue-600">{Math.round(progress)}% 완료</span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-neutral-100">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-blue-600 to-blue-400 transition-all"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            <div className="mt-2 flex items-center justify-between text-xs text-neutral-500">
+              <span>{plan.request.origin}</span>
+              <span>{plan.request.destination}</span>
             </div>
           </div>
-        </ActionCard>
-      </div>
+        </section>
 
-      {/* Progress Indicator */}
-      <div className="absolute top-[330px] left-5 right-5 z-20">
-        <div className="bg-white rounded-2xl p-4 shadow-lg border border-neutral-200">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm text-neutral-600">이동 진행도</span>
-            <span className="text-sm text-blue-600" style={{ fontWeight: 600 }}>35% 완료</span>
-          </div>
-          <div className="w-full h-2 bg-neutral-100 rounded-full overflow-hidden">
-            <div className="h-full bg-gradient-to-r from-blue-600 to-blue-400 rounded-full" style={{ width: '35%' }} />
-          </div>
-          <div className="flex items-center justify-between mt-2 text-xs text-neutral-500">
-            <span>강남역</span>
-            <span>선릉역</span>
-          </div>
-        </div>
-      </div>
+        <BottomSheet defaultExpanded={false}>
+          <div className="flex flex-col gap-4">
+            <section aria-labelledby="current-status-title">
+              <h2 id="current-status-title" className="mb-3 font-semibold text-neutral-900">현재 상태</h2>
+              <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
+                <div className="mb-3 flex items-start gap-3">
+                  <Timer className="mt-0.5 size-5 text-blue-600" aria-hidden="true" />
+                  <div className="flex-1">
+                    <div className="mb-1 text-sm font-semibold text-blue-900">
+                      {arrived ? "도착 완료" : "이동 중"}
+                    </div>
+                    <div className="text-xs text-blue-700">
+                      {arrived ? `${plan.request.destination}에 도착했습니다` : progressState.currentSegment.detail}
+                    </div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <div className="mb-1 text-xs text-blue-600">현재 구간</div>
+                    <div className="text-base font-semibold text-blue-900">
+                      {arrived ? "완료" : progressState.currentSegment.label}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="mb-1 text-xs text-blue-600">남은 보행 거리</div>
+                    <div className="text-base font-semibold text-blue-900">
+                      {arrived ? "0m" : `${remainingWalkingDistance}m`}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
 
-      {/* Bottom Sheet with En-route Details */}
-      <BottomSheet defaultExpanded={false}>
-        <div className="space-y-4">
-          {/* Current Status */}
-          <div>
-            <h3 className="text-neutral-900 mb-3" style={{ fontWeight: 600 }}>현재 상태</h3>
-            <div className="bg-blue-50 rounded-xl p-4 border border-blue-200">
-              <div className="flex items-start gap-3 mb-3">
-                <Timer className="w-5 h-5 text-blue-600 mt-0.5" />
+            {arrived && (
+              <section aria-label="도착 완료" className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                <div className="mb-1 text-sm font-semibold text-emerald-900">도착 완료</div>
+                <div className="text-xs text-emerald-700">
+                  목표 {formatClock(plan.targetArrival)} 기준 {formatDeviation(adjustedDeviation)}으로 경로를 마쳤습니다.
+                </div>
+              </section>
+            )}
+
+            <section aria-labelledby="arrival-comparison-title">
+              <h2 id="arrival-comparison-title" className="mb-3 font-semibold text-neutral-900">도착 시각 비교</h2>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-xl border border-neutral-200 bg-white p-3 text-center">
+                  <div className="mb-1 text-xs text-neutral-500">목표</div>
+                  <div className="text-xl font-bold tabular-nums text-neutral-900">
+                    {formatClock(plan.targetArrival)}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-center">
+                  <div className="mb-1 text-xs text-emerald-600">예상</div>
+                  <div className="text-xl font-bold tabular-nums text-emerald-900">
+                    {formatClock(adjustedExpectedArrival)}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-center">
+                  <div className="mb-1 text-xs text-blue-600">편차</div>
+                  <div className="text-xl font-bold tabular-nums text-blue-900">
+                    {formatSignedDeviation(adjustedDeviation)}
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section aria-labelledby="upcoming-segments-title">
+              <h2 id="upcoming-segments-title" className="mb-4 font-semibold text-neutral-900">다가오는 구간</h2>
+
+              <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+                <div>
+                  <div className="mb-4 flex items-center gap-3 border-b border-neutral-100 pb-4">
+                    <div className="size-3 animate-pulse rounded-full border-4 border-blue-200 bg-blue-600" />
+                    <div className="flex-1">
+                      <div className="mb-1 text-xs font-semibold text-blue-600">현재 위치</div>
+                      <div className="text-sm font-semibold text-neutral-900">
+                        {arrived ? plan.request.destination : progressState.currentSegment.label}
+                      </div>
+                    </div>
+                    <div className="rounded-full bg-neutral-50 px-3 py-1.5 text-xs text-neutral-500">
+                      {Math.round(progress)}% 완료
+                    </div>
+                  </div>
+
+                  {upcomingSegments.length === 0 ? (
+                    <div className="-ml-1 flex items-center gap-3 border-l-4 border-emerald-400 py-3 pl-4">
+                      <div className="flex size-10 items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50">
+                        <Navigation className="size-5 text-emerald-600" aria-hidden="true" />
+                      </div>
+                      <div className="flex-1">
+                        <div className="mb-1 text-sm font-semibold text-neutral-900">
+                          {arrived ? "모든 구간 완료" : `${plan.request.destination} 도착`}
+                        </div>
+                        <div className="text-xs text-neutral-500">
+                          {arrived ? "경로 종료를 눌러 메인으로 돌아가세요" : "마지막 구간을 진행 중입니다"}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    upcomingSegments.map((segment, index) => (
+                      <UpcomingSegment
+                        key={segment.id}
+                        segment={segment}
+                        isNext={index === 0}
+                      />
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-3 flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                <Clock className="size-5 text-amber-600" aria-hidden="true" />
                 <div className="flex-1">
-                  <div className="text-sm text-blue-900 mb-1" style={{ fontWeight: 600 }}>이동 중</div>
-                  <div className="text-xs text-blue-700">강남역 2번 출구 → 2호선 승강장</div>
+                  <div className="text-sm font-semibold text-amber-900">다음 이벤트까지</div>
+                  <div className="text-xs text-amber-700">
+                    {nextEvent ? `${nextEvent.label} 약 ${formatDuration(nextEvent.secondsUntil)} 후` : "모든 이벤트를 완료했습니다"}
+                  </div>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <div className="text-xs text-blue-600 mb-1">현재 구간</div>
-                  <div className="text-base text-blue-900" style={{ fontWeight: 600 }}>도보 이동</div>
-                </div>
-                <div>
-                  <div className="text-xs text-blue-600 mb-1">남은 거리</div>
-                  <div className="text-base text-blue-900" style={{ fontWeight: 600 }}>180m</div>
-                </div>
+            </section>
+
+            <section aria-labelledby="speed-options-title">
+              <h2 id="speed-options-title" className="mb-3 font-semibold text-neutral-900">속도 조절 옵션</h2>
+              <div className="flex flex-col gap-2">
+                {speedOptions.map((option) => {
+                  const optionDeltaSeconds = scaleSpeedDelta(option.deltaSeconds, progress);
+                  const optionArrival = new Date(plan.expectedArrival.getTime() + optionDeltaSeconds * 1000);
+                  const optionDeviation = Math.round(
+                    (optionArrival.getTime() - plan.targetArrival.getTime()) / 60000,
+                  );
+                  const isSelected = speedMode === option.id;
+
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      aria-pressed={isSelected}
+                      onClick={() => setSpeedMode(option.id)}
+                      className={`w-full rounded-xl border p-4 transition-colors ${
+                        isSelected
+                          ? "border-2 border-blue-600 bg-blue-600"
+                          : "border-neutral-200 bg-neutral-50 hover:bg-neutral-100"
+                      }`}
+                    >
+                      <div className="mb-1 flex items-center justify-between">
+                        <span className={`text-sm font-semibold ${isSelected ? "text-white" : "text-neutral-900"}`}>
+                          {option.title}
+                        </span>
+                        {option.id === "fast" ? (
+                          <TrendingUp className={`size-4 ${isSelected ? "text-white" : "text-neutral-500"}`} aria-hidden="true" />
+                        ) : (
+                          <div className={`size-2 rounded-full ${isSelected ? "bg-white" : "bg-neutral-400"}`} />
+                        )}
+                      </div>
+                      <div className={`text-left text-xs ${isSelected ? "text-white/90" : "text-neutral-600"}`}>
+                        {formatClock(optionArrival)} 도착 · 목표보다 {formatDeviation(optionDeviation)}
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
-            </div>
+            </section>
+
+            <section aria-label="다음 재계산 지점" className="rounded-xl bg-neutral-100 p-4">
+              <div className="mb-2 flex items-center gap-2">
+                <div className="size-2 animate-pulse rounded-full bg-blue-600" />
+                <span className="text-sm font-semibold text-neutral-700">다음 재계산 지점</span>
+              </div>
+              <div className="text-xs text-neutral-600">
+                {nextEvent
+                  ? `${nextEvent.label} 도착 시 ETA를 다시 계산합니다`
+                  : "경로가 완료되어 추가 재계산 지점이 없습니다"}
+              </div>
+            </section>
           </div>
-
-          {/* Time Comparison */}
-          <div>
-            <h3 className="text-neutral-900 mb-3" style={{ fontWeight: 600 }}>도착 시각 비교</h3>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="bg-white border border-neutral-200 rounded-xl p-3 text-center">
-                <div className="text-xs text-neutral-500 mb-1">목표</div>
-                <div className="text-xl text-neutral-900 tabular-nums" style={{ fontWeight: 700 }}>10:00</div>
-              </div>
-              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-center">
-                <div className="text-xs text-emerald-600 mb-1">예상</div>
-                <div className="text-xl text-emerald-900 tabular-nums" style={{ fontWeight: 700 }}>09:57</div>
-              </div>
-              <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-center">
-                <div className="text-xs text-blue-600 mb-1">편차</div>
-                <div className="text-xl text-blue-900 tabular-nums" style={{ fontWeight: 700 }}>-3분</div>
-              </div>
-            </div>
-          </div>
-
-          {/* Upcoming Events - Visual Progress */}
-          <div>
-            <h3 className="text-neutral-900 mb-4" style={{ fontWeight: 600 }}>다가오는 구간</h3>
-
-            {/* Visual Mini Timeline */}
-            <div className="bg-white rounded-2xl p-4 border border-neutral-200 shadow-sm">
-              <div className="space-y-0">
-                {/* Current Position Indicator */}
-                <div className="flex items-center gap-3 mb-4 pb-4 border-b border-neutral-100">
-                  <div className="w-3 h-3 rounded-full bg-blue-600 border-4 border-blue-200 animate-pulse" />
-                  <div className="flex-1">
-                    <div className="text-xs text-blue-600 mb-1" style={{ fontWeight: 600 }}>현재 위치</div>
-                    <div className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>강남역 2번 출구 앞</div>
-                  </div>
-                  <div className="text-xs text-neutral-500 bg-neutral-50 px-3 py-1.5 rounded-full">35% 완료</div>
-                </div>
-
-                {/* Next: Traffic Light */}
-                <div className="flex items-center gap-3 py-3 border-l-4 border-amber-400 -ml-1 pl-4">
-                  <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center">
-                    <AlertCircle className="w-5 h-5 text-amber-600" />
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>횡단보도 신호 대기</span>
-                      <span className="text-xs text-amber-700 bg-amber-50 px-2 py-1 rounded" style={{ fontWeight: 600 }}>120m</span>
-                    </div>
-                    <div className="text-xs text-amber-700 mb-2">약 45초 대기 예상</div>
-                    <div className="flex items-center gap-2 text-xs text-neutral-600">
-                      <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                      <span>재계산 지점</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Then: Subway */}
-                <div className="flex items-center gap-3 py-3 border-l-4 border-neutral-200 -ml-1 pl-4">
-                  <div className="w-10 h-10 rounded-xl bg-green-50 border border-green-200 flex items-center justify-center">
-                    <div className="w-6 h-6 rounded-full bg-green-600 flex items-center justify-center text-white text-xs" style={{ fontWeight: 700 }}>2</div>
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>2호선 탑승</span>
-                      <span className="text-xs text-neutral-500">3분 후</span>
-                    </div>
-                    <div className="text-xs text-neutral-500">09:35 열차 · 강남 → 선릉</div>
-                  </div>
-                </div>
-
-                {/* Final: Walk to Destination */}
-                <div className="flex items-center gap-3 py-3 border-l-4 border-neutral-200 -ml-1 pl-4">
-                  <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center">
-                    <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                    </svg>
-                  </div>
-                  <div className="flex-1">
-                    <div className="text-sm text-neutral-900 mb-1" style={{ fontWeight: 600 }}>하차 후 도보</div>
-                    <div className="text-xs text-neutral-500">선릉역 3번 출구 · 약 2분</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Time to Next Event */}
-            <div className="mt-3 bg-amber-50 rounded-xl p-3 border border-amber-200 flex items-center gap-3">
-              <Clock className="w-5 h-5 text-amber-600" />
-              <div className="flex-1">
-                <div className="text-sm text-amber-900" style={{ fontWeight: 600 }}>다음 이벤트까지</div>
-                <div className="text-xs text-amber-700">횡단보도 앞 약 90초 후 도착</div>
-              </div>
-            </div>
-          </div>
-
-          {/* Speed Adjustment Options */}
-          <div>
-            <h3 className="text-neutral-900 mb-3" style={{ fontWeight: 600 }}>속도 조절 옵션</h3>
-            <div className="space-y-2">
-              <button className="w-full p-4 bg-neutral-50 rounded-xl hover:bg-neutral-100 transition-colors border border-neutral-200">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>조금 더 빠르게 이동</span>
-                  <TrendingUp className="w-4 h-4 text-neutral-500" />
-                </div>
-                <div className="text-xs text-neutral-600 text-left">
-                  09:55 도착 · 목표보다 5분 빠름
-                </div>
-              </button>
-              <button className="w-full p-4 bg-blue-600 rounded-xl border-2 border-blue-600">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-sm text-white" style={{ fontWeight: 600 }}>현재 속도 유지 (권장)</span>
-                  <div className="w-2 h-2 bg-white rounded-full" />
-                </div>
-                <div className="text-xs text-white/90 text-left">
-                  09:57 도착 · 목표보다 3분 빠름
-                </div>
-              </button>
-              <button className="w-full p-4 bg-neutral-50 rounded-xl hover:bg-neutral-100 transition-colors border border-neutral-200">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-sm text-neutral-900" style={{ fontWeight: 600 }}>여유롭게 이동</span>
-                  <Timer className="w-4 h-4 text-neutral-500" />
-                </div>
-                <div className="text-xs text-neutral-600 text-left">
-                  10:02 도착 · 목표보다 2분 늦음
-                </div>
-              </button>
-            </div>
-          </div>
-
-          {/* Next Recalculation Point */}
-          <div className="bg-neutral-100 rounded-xl p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse" />
-              <span className="text-sm text-neutral-700" style={{ fontWeight: 600 }}>다음 재계산 지점</span>
-            </div>
-            <div className="text-xs text-neutral-600">
-              횡단보도 도착 시 실시간 신호 정보를 반영하여 ETA를 재계산합니다
-            </div>
-          </div>
-        </div>
-      </BottomSheet>
+        </BottomSheet>
+      </main>
     </div>
   );
+}
+
+function UpcomingSegment({ segment, isNext }: { segment: RouteSegment; isNext: boolean }) {
+  const isSignal = segment.type === "wait_signal";
+  const isSubway = segment.type === "subway";
+  const isBus = segment.type === "bus";
+  const border = isNext ? (isSignal ? "border-amber-400" : "border-blue-400") : "border-neutral-200";
+  const iconContainer = isSignal
+    ? "bg-amber-50 border-amber-200"
+    : isSubway
+      ? "bg-green-50 border-green-200"
+      : "bg-blue-50 border-blue-200";
+
+  return (
+    <div className={`-ml-1 flex items-center gap-3 border-l-4 py-3 pl-4 ${border}`}>
+      <div className={`flex size-10 items-center justify-center rounded-xl border ${iconContainer}`}>
+        {isSignal ? (
+          <AlertCircle className="size-5 text-amber-600" aria-hidden="true" />
+        ) : isSubway ? (
+          <div className="flex size-6 items-center justify-center rounded-full bg-green-600 text-xs font-bold text-white">
+            {segment.line?.replace("호선", "")}
+          </div>
+        ) : isBus ? (
+          <div
+            className="flex min-w-7 items-center justify-center rounded-md px-1.5 py-1 text-[10px] font-bold leading-none text-white"
+            style={{ backgroundColor: segment.routeColor ?? "#2563EB" }}
+          >
+            {segment.route}
+          </div>
+        ) : (
+          <svg className="size-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+            />
+          </svg>
+        )}
+      </div>
+      <div className="flex-1">
+        <div className="mb-1 flex items-center justify-between">
+          <span className="text-sm font-semibold text-neutral-900">{segment.label}</span>
+          <span className={`rounded px-2 py-1 text-xs ${isNext ? "bg-amber-50 text-amber-700" : "text-neutral-500"}`}>
+            {isNext ? "다음" : formatDuration(segment.duration)}
+          </span>
+        </div>
+        <div className={`text-xs ${isSignal ? "text-amber-700" : "text-neutral-500"}`}>
+          {segment.detail}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SignalStatusCard({
+  crossroadName,
+  distanceMeters,
+  signal,
+  advice,
+}: {
+  crossroadName: string;
+  distanceMeters: number;
+  signal: PedestrianSignal;
+  advice: CrossingAdvice;
+}) {
+  const stateStyle =
+    signal.state === "green"
+      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+      : signal.state === "red"
+        ? "bg-red-50 text-red-700 border-red-200"
+        : "bg-neutral-50 text-neutral-700 border-neutral-200";
+  const stateLabel = signal.state === "green" ? "녹색" : signal.state === "red" ? "적색" : "확인 중";
+  const isExpiring = signal.remainingSeconds <= 0;
+  const remainingLabel = isExpiring ? "변경 임박" : `${Math.ceil(signal.remainingSeconds)}초`;
+
+  return (
+    <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-lg">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="mb-1 text-xs font-semibold text-blue-600">실시간 보행 신호</div>
+          <div className="truncate text-sm font-semibold text-neutral-900">{crossroadName}</div>
+          <div className="text-xs text-neutral-500">
+            {formatSignalDirection(signal.direction)} · 약 {Math.round(distanceMeters)}m
+          </div>
+        </div>
+        <span className={`shrink-0 rounded-full border px-3 py-1 text-xs font-semibold ${stateStyle}`}>
+          {stateLabel}
+        </span>
+      </div>
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="mb-1 text-xs text-neutral-500">잔여 시간</div>
+          <div className="text-xl font-bold tabular-nums text-neutral-900">{remainingLabel}</div>
+        </div>
+        <div
+          className={`rounded-xl px-3 py-2 text-right text-xs font-semibold ${
+            advice.action === "go" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
+          }`}
+        >
+          {advice.message}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function selectPedestrianSignal(signals: PedestrianSignal[]): PedestrianSignal | null {
+  return (
+    signals.find((signal) => signal.state === "green") ??
+    signals.find((signal) => signal.state === "red") ??
+    signals[0] ??
+    null
+  );
+}
+
+function formatSignalDirection(direction: string): string {
+  const labels: Record<string, string> = {
+    nt: "북측 횡단",
+    et: "동측 횡단",
+    st: "남측 횡단",
+    wt: "서측 횡단",
+    ne: "북동측 횡단",
+    se: "남동측 횡단",
+    sw: "남서측 횡단",
+    nw: "북서측 횡단",
+  };
+
+  return labels[direction] ?? "보행 신호";
+}
+
+function getSpeedActionTitle(mode: SpeedMode): string {
+  if (mode === "fast") {
+    return "조금 빠르게 이동 중입니다";
+  }
+
+  if (mode === "relaxed") {
+    return "여유롭게 이동 중입니다";
+  }
+
+  return "지금 속도 유지하세요";
+}
+
+function getSpeedDescription(mode: SpeedMode, deviation: number): string {
+  if (mode === "fast") {
+    return `현재보다 빠른 페이스를 적용했습니다. 예상 편차는 ${formatDeviation(deviation)}입니다.`;
+  }
+
+  if (mode === "relaxed") {
+    return `여유로운 페이스를 적용했습니다. 예상 편차는 ${formatDeviation(deviation)}입니다.`;
+  }
+
+  return `현재 페이스대로 가면 목표 시각 대비 ${formatDeviation(deviation)}입니다.`;
+}
+
+function formatSignedDeviation(deviation: number): string {
+  if (deviation > 0) {
+    return `+${deviation}분`;
+  }
+
+  return `${deviation}분`;
+}
+
+function buildPlanForMode(
+  request: EtaPlan["request"],
+  routePlanState: RoutePlanState,
+  mode: EtaMode,
+  now: Date,
+): EtaPlan {
+  if (routePlanState.status === "success" && routePlanState.transitResponse && routePlanState.source === "tmap") {
+    try {
+      return mapTransitResponseToPlan(routePlanState.request, routePlanState.transitResponse, mode, now);
+    } catch {
+      return createEtaPlan(request, mode, now);
+    }
+  }
+
+  return createEtaPlan(request, mode, now);
 }

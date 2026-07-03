@@ -1,6 +1,6 @@
 import { ReactNode, useState } from "react";
 import { ChevronUp, ChevronDown } from "lucide-react";
-import { motion, AnimatePresence } from "motion/react";
+import { motion } from "motion/react";
 
 interface BottomSheetProps {
   children: ReactNode;
@@ -24,6 +24,9 @@ export function BottomSheet({
     >
       {/* Handle */}
       <button
+        type="button"
+        aria-label={isExpanded ? "상세 패널 접기" : "상세 패널 펼치기"}
+        aria-expanded={isExpanded}
         onClick={() => setIsExpanded(!isExpanded)}
         className="w-full py-3 flex items-center justify-center focus:outline-none active:bg-neutral-50 transition-colors"
       >
@@ -37,6 +40,9 @@ export function BottomSheet({
 
       {/* Expand/Collapse Button */}
       <button
+        type="button"
+        aria-label={isExpanded ? "상세 패널 접기" : "상세 패널 펼치기"}
+        aria-expanded={isExpanded}
         onClick={() => setIsExpanded(!isExpanded)}
         className="absolute top-3 right-5 p-2 hover:bg-neutral-100 rounded-full transition-colors"
       >
