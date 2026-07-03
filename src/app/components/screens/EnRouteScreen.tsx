@@ -30,17 +30,35 @@ import {
 } from "../../lib/enRoute";
 import type { CrossingWaitTrigger } from "../../lib/enRoute";
 import {
+  classifyGeolocationError,
+  hasRecentGeolocationPosition,
+  queryGeolocationPermission,
+  shouldSuggestDemoForWeakGpsSignal,
+  watchCurrentPosition,
+} from "../../lib/geolocation";
+import type { GeoPosition, GeolocationPermissionState } from "../../lib/geolocation";
+import {
   adviseCrossing,
-  createWalkingRouteSignalKey,
   fetchCrossroads,
   fetchRealtimeSignals,
   findSignalCrossroadsForRoute,
   getWalkingRoutePoints,
 } from "../../lib/signal";
 import type { CrossingAdvice, PedestrianSignal } from "../../lib/signal";
+import {
+  estimateArrival as estimateLiveArrival,
+  getDistanceMeters,
+  isOffRoute,
+  getRouteCoordinates,
+  paceAdvice,
+  projectOntoRoute,
+  selectArrivedState,
+  selectProgressPercent,
+} from "../../lib/tracking";
 import { mapTransitResponseToPlan } from "../../lib/transitMapper";
 
 type SpeedMode = "fast" | "steady" | "relaxed";
+type TrackingMode = "live" | "demo";
 
 const speedOptions: Array<{
   id: SpeedMode;
@@ -73,7 +91,15 @@ interface SimulationState {
   accumulatedSignalDelaySeconds: number;
 }
 
+interface LiveTrackingState {
+  permission: GeolocationPermissionState | "checking";
+  position: GeoPosition | null;
+  error: string | null;
+  weakSignalMessage: string | null;
+}
+
 const TICK_SECONDS = 0.5;
+const LIVE_UI_THROTTLE_MS = 2000;
 
 export function EnRouteScreen() {
   const navigate = useNavigate();
@@ -84,12 +110,24 @@ export function EnRouteScreen() {
     signalWait: null,
     accumulatedSignalDelaySeconds: 0,
   });
+  const [trackingMode, setTrackingMode] = useState<TrackingMode>("live");
+  const [liveTracking, setLiveTracking] = useState<LiveTrackingState>({
+    permission: "checking",
+    position: null,
+    error: null,
+    weakSignalMessage: null,
+  });
   const [speedMode, setSpeedMode] = useState<SpeedMode>("steady");
   const [activeSignalInfo, setActiveSignalInfo] = useState<ActiveSignalInfo | null>(null);
   const [signalNow, setSignalNow] = useState(() => Date.now());
   const celebratedRef = useRef(false);
   const handledWaitTriggerIdsRef = useRef<Set<string>>(new Set());
   const activeSignalInfoRef = useRef<ActiveSignalInfo | null>(null);
+  const lastLiveUiUpdateRef = useRef(0);
+  const pendingLivePositionRef = useRef<GeoPosition | null>(null);
+  const liveThrottleTimerRef = useRef<number | null>(null);
+  const transientGeolocationErrorCountRef = useRef(0);
+  const lastLivePositionReceivedAtRef = useRef<number | null>(null);
   const plan = useMemo(() => {
     if (!searchRequest) {
       return null;
@@ -102,13 +140,219 @@ export function EnRouteScreen() {
 
   const crossingWaitTriggers = useMemo(() => (plan ? getCrossingWaitTriggers(plan.segments) : []), [plan]);
   const demoSpeedMultiplier = plan ? getDemoSpeedMultiplier(plan.totalDuration, plan.seed) : 1;
-  const progress = plan ? Math.min(100, (simulation.elapsedSeconds / plan.totalDuration) * 100) : 0;
-  const arrived = Boolean(plan && simulation.elapsedSeconds >= plan.totalDuration && !simulation.signalWait);
-  const signalRouteKey = plan ? createWalkingRouteSignalKey(plan.segments) : "";
+  const routeCoords = useMemo(
+    () => (plan ? getRouteCoordinates(plan.segments, [plan.request.originPoint, plan.request.destinationPoint]) : []),
+    [plan],
+  );
+  const liveProjection = useMemo(
+    () =>
+      trackingMode === "live" && liveTracking.position && routeCoords.length > 0
+        ? projectOntoRoute(liveTracking.position, routeCoords)
+        : null,
+    [liveTracking.position, routeCoords, trackingMode],
+  );
+  const destinationDistance = plan?.request.destinationPoint && liveTracking.position
+    ? getDistanceMeters(liveTracking.position, plan.request.destinationPoint)
+    : Number.POSITIVE_INFINITY;
+  const demoProgress = plan ? Math.min(100, (simulation.elapsedSeconds / plan.totalDuration) * 100) : 0;
+  const progress = selectProgressPercent(trackingMode, liveProjection, demoProgress);
+  const demoArrived = Boolean(plan && simulation.elapsedSeconds >= plan.totalDuration && !simulation.signalWait);
+  const arrived = selectArrivedState({
+    mode: trackingMode,
+    liveProjection,
+    distanceToDestinationMeters: destinationDistance,
+    demoArrived,
+  });
+  const signalLookupPoints = useMemo(
+    () => (plan ? getSignalLookupPoints(plan.segments, trackingMode, liveTracking.position) : []),
+    [liveTracking.position, plan, trackingMode],
+  );
+  const signalRouteKey = signalLookupPoints
+    .map((point) => `${point.lat.toFixed(6)},${point.lng.toFixed(6)}`)
+    .join("|");
 
   useEffect(() => {
     activeSignalInfoRef.current = activeSignalInfo;
   }, [activeSignalInfo]);
+
+  useEffect(() => {
+    if (!plan || trackingMode !== "live") {
+      return undefined;
+    }
+
+    let cancelled = false;
+    let cleanup: (() => void) | undefined;
+    lastLiveUiUpdateRef.current = 0;
+    pendingLivePositionRef.current = null;
+    transientGeolocationErrorCountRef.current = 0;
+    lastLivePositionReceivedAtRef.current = null;
+    if (liveThrottleTimerRef.current !== null) {
+      window.clearTimeout(liveThrottleTimerRef.current);
+      liveThrottleTimerRef.current = null;
+    }
+
+    setLiveTracking({
+      permission: "checking",
+      position: null,
+      error: null,
+      weakSignalMessage: null,
+    });
+
+    const startWatching = async () => {
+      const permission = await queryGeolocationPermission();
+
+      if (cancelled) {
+        return;
+      }
+
+      if (permission === "unsupported") {
+        setLiveTracking({
+          permission,
+          position: null,
+          error: "이 브라우저는 위치 추적을 지원하지 않습니다. 데모 시뮬레이션으로 전환합니다.",
+          weakSignalMessage: null,
+        });
+        setTrackingMode("demo");
+        return;
+      }
+
+      if (permission === "denied") {
+        setLiveTracking({
+          permission,
+          position: null,
+          error: "위치 권한이 거부되었습니다. 데모 시뮬레이션으로 전환합니다.",
+          weakSignalMessage: null,
+        });
+        setTrackingMode("demo");
+        return;
+      }
+
+      setLiveTracking({
+        permission,
+        position: null,
+        error: null,
+        weakSignalMessage: null,
+      });
+
+      try {
+        const commitPosition = (position: GeoPosition) => {
+          lastLiveUiUpdateRef.current = Date.now();
+          pendingLivePositionRef.current = null;
+          transientGeolocationErrorCountRef.current = 0;
+          lastLivePositionReceivedAtRef.current = Date.now();
+          setLiveTracking({
+            permission,
+            position,
+            error: null,
+            weakSignalMessage: null,
+          });
+        };
+        const scheduleTrailingPosition = (delayMs: number) => {
+          if (liveThrottleTimerRef.current !== null) {
+            return;
+          }
+
+          liveThrottleTimerRef.current = window.setTimeout(() => {
+            liveThrottleTimerRef.current = null;
+
+            if (cancelled || !pendingLivePositionRef.current) {
+              return;
+            }
+
+            commitPosition(pendingLivePositionRef.current);
+          }, delayMs);
+        };
+
+        cleanup = watchCurrentPosition({
+          onPosition: (position) => {
+            const nowMs = Date.now();
+            const elapsedMs = nowMs - lastLiveUiUpdateRef.current;
+            transientGeolocationErrorCountRef.current = 0;
+            lastLivePositionReceivedAtRef.current = nowMs;
+
+            setLiveTracking((current) =>
+              current.weakSignalMessage
+                ? {
+                    ...current,
+                    weakSignalMessage: null,
+                  }
+                : current,
+            );
+
+            if (elapsedMs >= LIVE_UI_THROTTLE_MS) {
+              if (liveThrottleTimerRef.current !== null) {
+                window.clearTimeout(liveThrottleTimerRef.current);
+                liveThrottleTimerRef.current = null;
+              }
+              commitPosition(position);
+              return;
+            }
+
+            pendingLivePositionRef.current = position;
+            scheduleTrailingPosition(LIVE_UI_THROTTLE_MS - elapsedMs);
+          },
+          onError: (error) => {
+            if (cancelled) {
+              return;
+            }
+
+            if (classifyGeolocationError(error) === "fatal") {
+              setLiveTracking((current) => ({
+                ...current,
+                error: getGeolocationErrorMessage(error),
+                weakSignalMessage: null,
+              }));
+              setTrackingMode("demo");
+              return;
+            }
+
+            const nowMs = Date.now();
+
+            if (hasRecentGeolocationPosition(lastLivePositionReceivedAtRef.current, nowMs)) {
+              transientGeolocationErrorCountRef.current = 0;
+              return;
+            }
+
+            transientGeolocationErrorCountRef.current += 1;
+
+            if (
+              shouldSuggestDemoForWeakGpsSignal({
+                transientErrorCount: transientGeolocationErrorCountRef.current,
+                lastPositionAt: lastLivePositionReceivedAtRef.current,
+                now: nowMs,
+              })
+            ) {
+              setLiveTracking((current) => ({
+                ...current,
+                weakSignalMessage: "GPS 신호가 약합니다. 위치가 계속 갱신되지 않으면 데모 시뮬레이션으로 전환할 수 있습니다.",
+              }));
+            }
+          },
+        });
+      } catch (error) {
+        setLiveTracking((current) => ({
+          ...current,
+          error: error instanceof Error ? error.message : "위치 추적을 시작할 수 없습니다.",
+          weakSignalMessage: null,
+        }));
+        setTrackingMode("demo");
+      }
+    };
+
+    void startWatching();
+
+    return () => {
+      cancelled = true;
+      if (liveThrottleTimerRef.current !== null) {
+        window.clearTimeout(liveThrottleTimerRef.current);
+        liveThrottleTimerRef.current = null;
+      }
+      pendingLivePositionRef.current = null;
+      transientGeolocationErrorCountRef.current = 0;
+      lastLivePositionReceivedAtRef.current = null;
+      cleanup?.();
+    };
+  }, [plan, trackingMode]);
 
   useEffect(() => {
     if (!plan) {
@@ -135,7 +379,7 @@ export function EnRouteScreen() {
   }, [arrived]);
 
   useEffect(() => {
-    if (!plan || arrived) {
+    if (!plan || arrived || trackingMode !== "demo") {
       return undefined;
     }
 
@@ -211,7 +455,7 @@ export function EnRouteScreen() {
     return () => {
       window.clearInterval(timer);
     };
-  }, [arrived, crossingWaitTriggers, demoSpeedMultiplier, plan]);
+  }, [arrived, crossingWaitTriggers, demoSpeedMultiplier, plan, trackingMode]);
 
   useEffect(() => {
     if (!plan || arrived || !signalRouteKey) {
@@ -222,9 +466,7 @@ export function EnRouteScreen() {
     let cancelled = false;
 
     const updateSignalInfo = async () => {
-      const routePoints = getWalkingRoutePoints(plan.segments);
-
-      if (routePoints.length === 0) {
+      if (signalLookupPoints.length === 0) {
         if (!cancelled) {
           setActiveSignalInfo(null);
         }
@@ -232,7 +474,7 @@ export function EnRouteScreen() {
       }
 
       const [crossroads, realtimeSignals] = await Promise.all([fetchCrossroads(), fetchRealtimeSignals()]);
-      const [nearestSignalCrossroad] = findSignalCrossroadsForRoute(routePoints, crossroads, realtimeSignals);
+      const [nearestSignalCrossroad] = findSignalCrossroadsForRoute(signalLookupPoints, crossroads, realtimeSignals);
       const selectedSignal = nearestSignalCrossroad
         ? selectPedestrianSignal(nearestSignalCrossroad.signals)
         : null;
@@ -283,22 +525,31 @@ export function EnRouteScreen() {
     return null;
   }
 
+  const isLiveMode = trackingMode === "live";
   const selectedSpeed = speedOptions.find((option) => option.id === speedMode) ?? speedOptions[1];
-  const adjustedDeltaSeconds = scaleSpeedDelta(selectedSpeed.deltaSeconds, progress);
+  const adjustedDeltaSeconds = isLiveMode ? 0 : scaleSpeedDelta(selectedSpeed.deltaSeconds, progress);
   const signalDelaySeconds =
-    simulation.accumulatedSignalDelaySeconds + (simulation.signalWait?.addedDelaySeconds ?? 0);
-  const adjustedExpectedArrival = new Date(
-    plan.expectedArrival.getTime() + (adjustedDeltaSeconds + signalDelaySeconds) * 1000,
-  );
-  const adjustedDeviation = Math.round(
-    (adjustedExpectedArrival.getTime() - plan.targetArrival.getTime()) / 60000,
-  );
-  const elapsedJourneySeconds = simulation.elapsedSeconds;
+    isLiveMode ? 0 : simulation.accumulatedSignalDelaySeconds + (simulation.signalWait?.addedDelaySeconds ?? 0);
+  const liveArrivalEstimate = isLiveMode && liveProjection
+    ? estimateLiveArrival(liveProjection.progressRatio, plan, new Date())
+    : null;
+  const adjustedExpectedArrival = liveArrivalEstimate?.expectedArrival ??
+    new Date(plan.expectedArrival.getTime() + (adjustedDeltaSeconds + signalDelaySeconds) * 1000);
+  const adjustedDeviation = liveArrivalEstimate?.deviationMinutes ??
+    Math.round((adjustedExpectedArrival.getTime() - plan.targetArrival.getTime()) / 60000);
+  const elapsedJourneySeconds = isLiveMode
+    ? plan.totalDuration * ((liveProjection?.progressRatio ?? 0))
+    : simulation.elapsedSeconds;
   const progressState = getProgressState(plan.segments, elapsedJourneySeconds);
   const upcomingSegments = arrived ? [] : plan.segments.slice(progressState.currentIndex + 1, progressState.currentIndex + 4);
   const remainingWalkingDistance = getRemainingWalkingDistance(plan.segments, elapsedJourneySeconds);
   const nextEvent = getNextEvent(plan.segments, elapsedJourneySeconds);
   const interpolatedPosition = interpolateRoutePosition(plan.segments, progress);
+  const currentMapPosition = isLiveMode
+    ? liveTracking.position ?? interpolatedPosition
+    : interpolatedPosition;
+  const liveOffRoute = Boolean(isLiveMode && liveProjection && isOffRoute(liveProjection.offRouteDistanceMeters));
+  const currentPaceAdvice = paceAdvice(adjustedDeviation);
   const activeSignal = getCurrentSignal(activeSignalInfo, signalNow);
   const crossingAdvice = activeSignal ? adviseCrossing(activeSignal) : null;
   const demoSpeedLabel = `x${demoSpeedMultiplier.toFixed(1)}`;
@@ -332,7 +583,12 @@ export function EnRouteScreen() {
           <div className="flex items-center gap-3">
             <Navigation className="size-6 text-white" aria-hidden="true" />
             <div className="min-w-0 flex-1">
-              <div className="mb-1 text-sm text-white">{plan.request.destination}까지</div>
+              <div className="mb-1 flex items-center gap-2 text-sm text-white">
+                <span>{plan.request.destination}까지</span>
+                <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs font-semibold">
+                  {isLiveMode ? "실시간 추적" : "데모 시뮬레이션"}
+                </span>
+              </div>
               <div className="truncate text-2xl font-bold tabular-nums text-white">
                 {arrived ? "도착 완료" : `${formatClock(adjustedExpectedArrival)} 도착 예정`}
               </div>
@@ -358,7 +614,7 @@ export function EnRouteScreen() {
               name: plan.request.destination,
             }}
             currentPosition={
-              interpolatedPosition ?? {
+              currentMapPosition ?? {
                 lat: (plan.request.originPoint?.lat ?? 1) + progress / 100,
                 lng: (plan.request.originPoint?.lng ?? 1) + progress / 100,
               }
@@ -371,9 +627,25 @@ export function EnRouteScreen() {
         <section aria-label="실시간 이동 요약" className="absolute left-5 right-5 top-5 z-20 flex flex-col gap-4">
           <ActionCard
             icon={Zap}
-            title={getLiveActionTitle(arrived, simulation, speedMode)}
-            description={getLiveActionDescription(arrived, simulation, speedMode, adjustedDeviation)}
-            variant={simulation.signalWait ? "warning" : arrived || adjustedDeviation <= 0 ? "success" : "warning"}
+            title={
+              isLiveMode
+                ? getLiveTrackingActionTitle(arrived, liveTracking, liveOffRoute, currentPaceAdvice.title)
+                : getDemoActionTitle(arrived, simulation, speedMode)
+            }
+            description={
+              isLiveMode
+                ? getLiveTrackingActionDescription(arrived, liveTracking, liveProjection, liveOffRoute, currentPaceAdvice.description)
+                : getDemoActionDescription(arrived, simulation, speedMode, adjustedDeviation)
+            }
+            variant={
+              liveOffRoute || simulation.signalWait
+                ? "warning"
+                : arrived || currentPaceAdvice.tone === "success"
+                  ? "success"
+                  : currentPaceAdvice.tone === "neutral"
+                    ? "primary"
+                    : "warning"
+            }
           >
             <div className="mt-3 border-t border-white/20 pt-3">
               <div className="flex items-center justify-between text-sm">
@@ -396,31 +668,63 @@ export function EnRouteScreen() {
             />
           )}
 
+          {isLiveMode && liveTracking.weakSignalMessage && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 shadow-lg">
+              <div className="mb-3 flex items-start gap-3">
+                <AlertCircle className="mt-0.5 size-5 shrink-0 text-amber-600" aria-hidden="true" />
+                <div className="min-w-0 flex-1">
+                  <div className="mb-1 text-sm font-semibold text-amber-900">GPS 신호 약함</div>
+                  <div className="text-xs text-amber-700">{liveTracking.weakSignalMessage}</div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTrackingMode("demo")}
+                className="w-full rounded-lg bg-amber-600 px-3 py-2 text-xs font-semibold text-white"
+              >
+                데모 시뮬레이션으로 전환
+              </button>
+            </div>
+          )}
+
           <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-lg">
             <div className="mb-2 flex items-center justify-between">
               <div>
                 <div className="text-sm text-neutral-600">이동 진행도</div>
                 <div className="text-xs font-semibold text-blue-600">
-                  데모 시뮬레이션 · 데모 배속 {demoSpeedLabel}
+                  {isLiveMode
+                    ? getLiveModeSummary(liveTracking, liveProjection)
+                    : `${liveTracking.error ? "위치 오류로 데모 전환됨" : "데모 시뮬레이션"} · 데모 배속 ${demoSpeedLabel}`}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() =>
-                  setSimulation((current) => ({
-                    ...current,
-                    manualPaused: !current.manualPaused,
-                  }))
-                }
-                className="flex items-center gap-1 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs font-semibold text-neutral-700"
-              >
-                {simulation.manualPaused ? (
-                  <Play className="size-3.5" aria-hidden="true" />
-                ) : (
-                  <Pause className="size-3.5" aria-hidden="true" />
+              <div className="flex items-center gap-2">
+                {!isLiveMode && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSimulation((current) => ({
+                        ...current,
+                        manualPaused: !current.manualPaused,
+                      }))
+                    }
+                    className="flex items-center gap-1 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs font-semibold text-neutral-700"
+                  >
+                    {simulation.manualPaused ? (
+                      <Play className="size-3.5" aria-hidden="true" />
+                    ) : (
+                      <Pause className="size-3.5" aria-hidden="true" />
+                    )}
+                    {simulation.manualPaused ? "재생" : "일시정지"}
+                  </button>
                 )}
-                {simulation.manualPaused ? "재생" : "일시정지"}
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setTrackingMode(isLiveMode ? "demo" : "live")}
+                  className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700"
+                >
+                  {isLiveMode ? "데모로 전환" : "실시간 추적"}
+                </button>
+              </div>
             </div>
             <div className="h-2 w-full overflow-hidden rounded-full bg-neutral-100">
               <div
@@ -557,49 +861,51 @@ export function EnRouteScreen() {
               </div>
             </section>
 
-            <section aria-labelledby="speed-options-title">
-              <h2 id="speed-options-title" className="mb-3 font-semibold text-neutral-900">속도 조절 옵션</h2>
-              <div className="flex flex-col gap-2">
-                {speedOptions.map((option) => {
-                  const optionDeltaSeconds = scaleSpeedDelta(option.deltaSeconds, progress);
-                  const optionArrival = new Date(
-                    plan.expectedArrival.getTime() + (optionDeltaSeconds + signalDelaySeconds) * 1000,
-                  );
-                  const optionDeviation = Math.round(
-                    (optionArrival.getTime() - plan.targetArrival.getTime()) / 60000,
-                  );
-                  const isSelected = speedMode === option.id;
+            {!isLiveMode && (
+              <section aria-labelledby="speed-options-title">
+                <h2 id="speed-options-title" className="mb-3 font-semibold text-neutral-900">속도 조절 옵션</h2>
+                <div className="flex flex-col gap-2">
+                  {speedOptions.map((option) => {
+                    const optionDeltaSeconds = scaleSpeedDelta(option.deltaSeconds, progress);
+                    const optionArrival = new Date(
+                      plan.expectedArrival.getTime() + (optionDeltaSeconds + signalDelaySeconds) * 1000,
+                    );
+                    const optionDeviation = Math.round(
+                      (optionArrival.getTime() - plan.targetArrival.getTime()) / 60000,
+                    );
+                    const isSelected = speedMode === option.id;
 
-                  return (
-                    <button
-                      key={option.id}
-                      type="button"
-                      aria-pressed={isSelected}
-                      onClick={() => setSpeedMode(option.id)}
-                      className={`w-full rounded-xl border p-4 transition-colors ${
-                        isSelected
-                          ? "border-2 border-blue-600 bg-blue-600"
-                          : "border-neutral-200 bg-neutral-50 hover:bg-neutral-100"
-                      }`}
-                    >
-                      <div className="mb-1 flex items-center justify-between">
-                        <span className={`text-sm font-semibold ${isSelected ? "text-white" : "text-neutral-900"}`}>
-                          {option.title}
-                        </span>
-                        {option.id === "fast" ? (
-                          <TrendingUp className={`size-4 ${isSelected ? "text-white" : "text-neutral-500"}`} aria-hidden="true" />
-                        ) : (
-                          <div className={`size-2 rounded-full ${isSelected ? "bg-white" : "bg-neutral-400"}`} />
-                        )}
-                      </div>
-                      <div className={`text-left text-xs ${isSelected ? "text-white/90" : "text-neutral-600"}`}>
-                        {formatClock(optionArrival)} 도착 · 목표보다 {formatDeviation(optionDeviation)}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        aria-pressed={isSelected}
+                        onClick={() => setSpeedMode(option.id)}
+                        className={`w-full rounded-xl border p-4 transition-colors ${
+                          isSelected
+                            ? "border-2 border-blue-600 bg-blue-600"
+                            : "border-neutral-200 bg-neutral-50 hover:bg-neutral-100"
+                        }`}
+                      >
+                        <div className="mb-1 flex items-center justify-between">
+                          <span className={`text-sm font-semibold ${isSelected ? "text-white" : "text-neutral-900"}`}>
+                            {option.title}
+                          </span>
+                          {option.id === "fast" ? (
+                            <TrendingUp className={`size-4 ${isSelected ? "text-white" : "text-neutral-500"}`} aria-hidden="true" />
+                          ) : (
+                            <div className={`size-2 rounded-full ${isSelected ? "bg-white" : "bg-neutral-400"}`} />
+                          )}
+                        </div>
+                        <div className={`text-left text-xs ${isSelected ? "text-white/90" : "text-neutral-600"}`}>
+                          {formatClock(optionArrival)} 도착 · 목표보다 {formatDeviation(optionDeviation)}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
 
             <section aria-label="다음 재계산 지점" className="rounded-xl bg-neutral-100 p-4">
               <div className="mb-2 flex items-center gap-2">
@@ -768,7 +1074,58 @@ function getCurrentSignal(info: ActiveSignalInfo | null, nowMs: number): Pedestr
   };
 }
 
-function getLiveActionTitle(arrived: boolean, simulation: SimulationState, speedMode: SpeedMode): string {
+function getLiveTrackingActionTitle(
+  arrived: boolean,
+  liveTracking: LiveTrackingState,
+  offRoute: boolean,
+  paceTitle: string,
+): string {
+  if (arrived) {
+    return "목적지에 도착했습니다";
+  }
+
+  if (liveTracking.error) {
+    return "데모 시뮬레이션으로 전환했습니다";
+  }
+
+  if (!liveTracking.position) {
+    return "위치 확인 중...";
+  }
+
+  if (offRoute) {
+    return "경로에서 벗어났습니다";
+  }
+
+  return paceTitle;
+}
+
+function getLiveTrackingActionDescription(
+  arrived: boolean,
+  liveTracking: LiveTrackingState,
+  liveProjection: ReturnType<typeof projectOntoRoute> | null,
+  offRoute: boolean,
+  paceDescription: string,
+): string {
+  if (arrived) {
+    return "실시간 위치 기준으로 목적지 도착을 확인했습니다.";
+  }
+
+  if (liveTracking.error) {
+    return liveTracking.error;
+  }
+
+  if (!liveTracking.position) {
+    return "GPS 신호를 확인하고 있습니다. 위치가 잡히면 진행률과 ETA가 자동으로 갱신됩니다.";
+  }
+
+  if (offRoute && liveProjection) {
+    return `경로에서 약 ${Math.round(liveProjection.offRouteDistanceMeters)}m 벗어났습니다. 경로로 복귀하세요.`;
+  }
+
+  return paceDescription;
+}
+
+function getDemoActionTitle(arrived: boolean, simulation: SimulationState, speedMode: SpeedMode): string {
   if (arrived) {
     return "목적지에 도착했습니다";
   }
@@ -784,7 +1141,7 @@ function getLiveActionTitle(arrived: boolean, simulation: SimulationState, speed
   return getSpeedActionTitle(speedMode);
 }
 
-function getLiveActionDescription(
+function getDemoActionDescription(
   arrived: boolean,
   simulation: SimulationState,
   speedMode: SpeedMode,
@@ -803,6 +1160,27 @@ function getLiveActionDescription(
   }
 
   return getSpeedDescription(speedMode, deviation);
+}
+
+function getLiveModeSummary(liveTracking: LiveTrackingState, liveProjection: ReturnType<typeof projectOntoRoute> | null): string {
+  if (liveTracking.error) {
+    return "실시간 추적 · 위치 오류";
+  }
+
+  if (liveTracking.weakSignalMessage) {
+    return "실시간 추적 · GPS 신호 약함";
+  }
+
+  if (!liveTracking.position) {
+    return "실시간 추적 · 위치 확인 중";
+  }
+
+  const accuracy = `GPS 정확도 ±${Math.round(liveTracking.position.accuracy)}m`;
+  const routeDistance = liveProjection
+    ? ` · 경로 이탈 ${Math.round(liveProjection.offRouteDistanceMeters)}m`
+    : "";
+
+  return `실시간 추적 · ${accuracy}${routeDistance}`;
 }
 
 function getSpeedActionTitle(mode: SpeedMode): string {
@@ -835,6 +1213,44 @@ function formatSignedDeviation(deviation: number): string {
   }
 
   return `${deviation}분`;
+}
+
+function getSignalLookupPoints(
+  segments: RouteSegment[],
+  trackingMode: TrackingMode,
+  livePosition: GeoPosition | null,
+): Array<{ lat: number; lng: number }> {
+  const walkingRoutePoints = getWalkingRoutePoints(segments);
+
+  if (trackingMode !== "live" || !livePosition) {
+    return walkingRoutePoints;
+  }
+
+  const nearbyCrossingPoints = getCrossingPoints(segments).filter(
+    (point) => getDistanceMeters(livePosition, point) <= 150,
+  );
+
+  return nearbyCrossingPoints.length > 0 ? nearbyCrossingPoints : walkingRoutePoints;
+}
+
+function getCrossingPoints(segments: RouteSegment[]): Array<{ lat: number; lng: number }> {
+  return segments.flatMap((segment) => segment.crossings?.map((crossing) => crossing.position) ?? []);
+}
+
+function getGeolocationErrorMessage(error: GeolocationPositionError): string {
+  if (error.code === error.PERMISSION_DENIED) {
+    return "위치 권한이 거부되었습니다. 데모 시뮬레이션으로 전환합니다.";
+  }
+
+  if (error.code === error.POSITION_UNAVAILABLE) {
+    return "현재 위치를 확인할 수 없습니다. 데모 시뮬레이션으로 전환합니다.";
+  }
+
+  if (error.code === error.TIMEOUT) {
+    return "위치 확인 시간이 초과되었습니다. 데모 시뮬레이션으로 전환합니다.";
+  }
+
+  return "위치 추적 중 오류가 발생했습니다. 데모 시뮬레이션으로 전환합니다.";
 }
 
 function buildPlanForMode(
