@@ -1,7 +1,5 @@
 import type { GeoPoint } from "./eta";
 
-const TMAP_POI_URL = "https://apis.openapi.sk.com/tmap/pois";
-const TMAP_TRANSIT_URL = "https://apis.openapi.sk.com/transit/routes";
 const DEFAULT_TIMEOUT_MS = 8000;
 const SDK_POLL_INTERVAL_MS = 100;
 
@@ -97,17 +95,11 @@ export async function searchPois(query: string, count = 5): Promise<TmapPoi[]> {
     return [];
   }
 
-  const appKey = getTmapAppKey();
-  const url = new URL(TMAP_POI_URL);
-  url.searchParams.set("version", "1");
-  url.searchParams.set("searchKeyword", keyword);
-  url.searchParams.set("count", String(count));
-
-  const data = await fetchJson<TmapPoiResponse>(url.toString(), {
+  const data = await fetchJson<TmapPoiResponse>(createApiUrl("/api/tmap/pois", {
+    q: keyword,
+    count: String(count),
+  }), {
     method: "GET",
-    headers: {
-      appKey,
-    },
   });
 
   return (data.searchPoiInfo?.pois?.poi ?? [])
@@ -126,12 +118,9 @@ export async function fetchTransitRoutes(
   end: GeoPoint,
   count = 3,
 ): Promise<TmapTransitResponse> {
-  const appKey = getTmapAppKey();
-
-  return fetchJson<TmapTransitResponse>(TMAP_TRANSIT_URL, {
+  return fetchJson<TmapTransitResponse>("/api/tmap/transit", {
     method: "POST",
     headers: {
-      appKey,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -142,6 +131,12 @@ export async function fetchTransitRoutes(
       count,
     }),
   });
+}
+
+function createApiUrl(pathname: string, params: Record<string, string>): string {
+  const searchParams = new URLSearchParams(params);
+
+  return `${pathname}?${searchParams.toString()}`;
 }
 
 export async function loadTmapSdk(): Promise<void> {

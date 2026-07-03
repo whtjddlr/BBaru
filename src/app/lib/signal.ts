@@ -1,6 +1,5 @@
 import type { GeoPoint } from "./eta";
 
-const DATA_GO_KR_BASE_URL = "https://apis.data.go.kr/B551982/rti";
 const CROSSROADS_CACHE_KEY = "bbaru:crossroads:v1";
 const CROSSROADS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = 8000;
@@ -74,12 +73,11 @@ export async function fetchCrossroads(): Promise<Crossroad[]> {
   }
 
   try {
-    const appKey = getDataGoKrKey();
     const allCrossroads: Crossroad[] = [];
     const pageSize = 1000;
 
     for (let pageNo = 1; pageNo <= 3; pageNo += 1) {
-      const url = createSignalUrl("/crsrd_map_info", appKey, {
+      const url = createSignalUrl("crossroads", {
         pageNo: String(pageNo),
         numOfRows: String(pageSize),
       });
@@ -103,8 +101,7 @@ export async function fetchCrossroads(): Promise<Crossroad[]> {
 
 export async function fetchRealtimeSignals(): Promise<Map<string, SignalRealtimeItem>> {
   try {
-    const appKey = getDataGoKrKey();
-    const url = createSignalUrl("/tl_drct_info", appKey, {
+    const url = createSignalUrl("realtime", {
       pageNo: "1",
       numOfRows: "1000",
     });
@@ -347,28 +344,15 @@ function toRadians(value: number): number {
   return (value * Math.PI) / 180;
 }
 
-function getDataGoKrKey(): string {
-  const key = import.meta.env.VITE_DATA_GO_KR_KEY;
-
-  if (!key) {
-    throw new Error("VITE_DATA_GO_KR_KEY가 설정되어 있지 않습니다.");
-  }
-
-  return key;
-}
-
-function createSignalUrl(pathname: string, serviceKey: string, params: Record<string, string>): string {
-  const url = new URL(`${DATA_GO_KR_BASE_URL}${pathname}`);
-  url.searchParams.set("type", "json");
-  url.searchParams.set("stdgCd", SEOUL_STDG_CD);
+function createSignalUrl(pathname: "crossroads" | "realtime", params: Record<string, string>): string {
+  const searchParams = new URLSearchParams();
+  searchParams.set("stdgCd", SEOUL_STDG_CD);
 
   Object.entries(params).forEach(([key, value]) => {
-    url.searchParams.set(key, value);
+    searchParams.set(key, value);
   });
 
-  const keyParam = serviceKey.includes("%") ? serviceKey : encodeURIComponent(serviceKey);
-
-  return `${url.origin}${url.pathname}?serviceKey=${keyParam}&${url.searchParams.toString()}`;
+  return `/api/signal/${pathname}?${searchParams.toString()}`;
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
