@@ -1,17 +1,26 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { Search, Clock, MapPin, TrendingUp, Navigation2, Smartphone, X, Bell } from "lucide-react";
+import { Search, Clock, MapPin, TrendingUp, Navigation2, Smartphone, X, Bell, Footprints } from "lucide-react";
 import { useRouteState } from "../../context/RouteContext";
 import { formatClock, formatDurationCompact, GeoPoint } from "../../lib/eta";
 import { searchPois, TmapPoi } from "../../lib/tmap";
 import { useInstallPrompt } from "../../lib/useInstallPrompt";
 import { isDepartureAlarmActive } from "../../lib/departureAlarm";
+import { formatWalkSpeedKmh, isWalkProfileMature, WALK_PROFILE_MIN_SAMPLES } from "../../lib/walkProfile";
 
 type PoiSuggestionStatus = "idle" | "loading" | "success" | "empty";
 
 export function MainScreen() {
   const navigate = useNavigate();
-  const { recentRoutes, searchRequest, startSearch, departureAlarm, cancelDepartureAlarm } = useRouteState();
+  const {
+    recentRoutes,
+    searchRequest,
+    startSearch,
+    departureAlarm,
+    cancelDepartureAlarm,
+    walkProfile,
+    resetWalkProfile,
+  } = useRouteState();
   const [origin, setOrigin] = useState(searchRequest?.origin ?? "");
   const [destination, setDestination] = useState(searchRequest?.destination ?? "");
   const [originPoint, setOriginPoint] = useState<GeoPoint | undefined>(searchRequest?.originPoint);
@@ -207,6 +216,37 @@ export function MainScreen() {
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+        </section>
+
+        <section aria-label="보행속도 프로필" className="mt-6">
+          <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+            <div className="flex items-start gap-3">
+              <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50">
+                <Footprints className="size-5 text-emerald-600" aria-hidden="true" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="mb-1 text-sm font-semibold text-neutral-900">내 보행 속도</div>
+                {isWalkProfileMature(walkProfile) ? (
+                  <div className="text-xs text-neutral-500">
+                    내 평균 보행 속도 {formatWalkSpeedKmh(walkProfile.speedMps)} km/h
+                  </div>
+                ) : (
+                  <div className="text-xs text-neutral-500">
+                    도보 이동 {walkProfile?.sampleCount ?? 0}회 기록 중 — {WALK_PROFILE_MIN_SAMPLES}회부터 맞춤 보정
+                  </div>
+                )}
+              </div>
+              {isWalkProfileMature(walkProfile) && (
+                <button
+                  type="button"
+                  onClick={resetWalkProfile}
+                  className="shrink-0 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs font-semibold text-neutral-600"
+                >
+                  초기화
+                </button>
+              )}
             </div>
           </div>
         </section>

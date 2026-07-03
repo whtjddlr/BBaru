@@ -66,6 +66,12 @@ import {
   updateRerouteStateForPosition,
   type RerouteState,
 } from "../../lib/reroute";
+import {
+  applyWalkProfile,
+  collectPaceSample,
+  type WalkPaceProjection,
+  type WalkProfile,
+} from "../../lib/walkProfile";
 
 type SpeedMode = "fast" | "steady" | "relaxed";
 type TrackingMode = "live" | "demo";
@@ -119,7 +125,15 @@ const LIVE_UI_THROTTLE_MS = 2000;
 
 export function EnRouteScreen() {
   const navigate = useNavigate();
-  const { clearSearch, searchRequest, selectedMode, routePlanState, rerouteFromPosition } = useRouteState();
+  const {
+    clearSearch,
+    searchRequest,
+    selectedMode,
+    routePlanState,
+    rerouteFromPosition,
+    recordWalkPaceSample,
+    walkProfile,
+  } = useRouteState();
   const [simulation, setSimulation] = useState<SimulationState>({
     elapsedSeconds: 0,
     manualPaused: false,
@@ -152,6 +166,8 @@ export function EnRouteScreen() {
   const signalNoDataDismissedRef = useRef(false);
   const rerouteStateRef = useRef<RerouteState>(createInitialRerouteState());
   const rerouteInFlightRef = useRef(false);
+  const walkProfileForPlanRef = useRef<WalkProfile | null>(walkProfile);
+  const previousWalkSampleRef = useRef<{ projection: WalkPaceProjection; timestamp: number } | null>(null);
   const plan = useMemo(() => {
     if (!searchRequest) {
       return null;
@@ -159,7 +175,7 @@ export function EnRouteScreen() {
 
     const planRequest = routePlanState.status === "success" ? routePlanState.request : searchRequest;
 
-    return buildPlanForMode(planRequest, routePlanState, selectedMode, new Date());
+    return buildPlanForMode(planRequest, routePlanState, selectedMode, new Date(), walkProfileForPlanRef.current);
   }, [routePlanState, searchRequest, selectedMode]);
 
   const crossingWaitTriggers = useMemo(() => (plan ? getCrossingWaitTriggers(plan.segments) : []), [plan]);
@@ -196,6 +212,14 @@ export function EnRouteScreen() {
     .map((point) => `${point.lat.toFixed(6)},${point.lng.toFixed(6)}`)
     .join("|");
   const isLiveMode = trackingMode === "live";
+  const elapsedJourneySecondsForState = plan
+    ? isLiveMode
+      ? plan.totalDuration * (liveProjection?.progressRatio ?? 0)
+      : simulation.elapsedSeconds
+    : 0;
+  const currentSegmentTypeForSampling = plan
+    ? getProgressState(plan.segments, elapsedJourneySecondsForState).currentSegment.type
+    : null;
 
   useEffect(() => {
     activeSignalInfoRef.current = activeSignalInfo;
@@ -417,7 +441,47 @@ export function EnRouteScreen() {
     setSignalNoDataVisible(false);
     setSignalNoDataDismissed(false);
     signalNoDataDismissedRef.current = false;
+    previousWalkSampleRef.current = null;
   }, [plan]);
+
+  useEffect(() => {
+    if (!isLiveMode || !liveProjection || !liveTracking.position || arrived) {
+      previousWalkSampleRef.current = null;
+      return;
+    }
+
+    const nextProjection: WalkPaceProjection = {
+      traveledDistanceMeters: liveProjection.traveledDistanceMeters,
+      accuracy: liveTracking.position.accuracy,
+    };
+    const previousSample = previousWalkSampleRef.current;
+
+    if (previousSample) {
+      const elapsedSeconds = Math.max(0, (liveTracking.position.timestamp - previousSample.timestamp) / 1000);
+      const sample = collectPaceSample(
+        previousSample.projection,
+        nextProjection,
+        elapsedSeconds,
+        currentSegmentTypeForSampling,
+      );
+
+      if (sample) {
+        recordWalkPaceSample(sample.speedMps);
+      }
+    }
+
+    previousWalkSampleRef.current = {
+      projection: nextProjection,
+      timestamp: liveTracking.position.timestamp,
+    };
+  }, [
+    arrived,
+    isLiveMode,
+    liveProjection,
+    liveTracking.position,
+    currentSegmentTypeForSampling,
+    recordWalkPaceSample,
+  ]);
 
   useEffect(() => {
     if (!isLiveMode || !liveProjection || !liveTracking.position || arrived) {
@@ -688,9 +752,7 @@ export function EnRouteScreen() {
     new Date(plan.expectedArrival.getTime() + (adjustedDeltaSeconds + signalDelaySeconds) * 1000);
   const adjustedDeviation = liveArrivalEstimate?.deviationMinutes ??
     Math.round((adjustedExpectedArrival.getTime() - plan.targetArrival.getTime()) / 60000);
-  const elapsedJourneySeconds = isLiveMode
-    ? plan.totalDuration * ((liveProjection?.progressRatio ?? 0))
-    : simulation.elapsedSeconds;
+  const elapsedJourneySeconds = elapsedJourneySecondsForState;
   const progressState = getProgressState(plan.segments, elapsedJourneySeconds);
   const upcomingSegments = arrived ? [] : plan.segments.slice(progressState.currentIndex + 1, progressState.currentIndex + 4);
   const remainingWalkingDistance = getRemainingWalkingDistance(plan.segments, elapsedJourneySeconds);
@@ -1477,14 +1539,20 @@ function buildPlanForMode(
   routePlanState: RoutePlanState,
   mode: EtaMode,
   now: Date,
+  walkProfile: WalkProfile | null,
 ): EtaPlan {
+  let plan: EtaPlan;
+
   if (routePlanState.status === "success" && routePlanState.transitResponse && routePlanState.source === "tmap") {
     try {
-      return mapTransitResponseToPlan(routePlanState.request, routePlanState.transitResponse, mode, now);
+      plan = mapTransitResponseToPlan(routePlanState.request, routePlanState.transitResponse, mode, now);
+      return applyWalkProfile(plan, walkProfile, now);
     } catch {
-      return createEtaPlan(request, mode, now);
+      plan = createEtaPlan(request, mode, now);
+      return applyWalkProfile(plan, walkProfile, now);
     }
   }
 
-  return createEtaPlan(request, mode, now);
+  plan = createEtaPlan(request, mode, now);
+  return applyWalkProfile(plan, walkProfile, now);
 }

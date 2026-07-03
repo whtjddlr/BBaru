@@ -31,6 +31,7 @@ import {
   isMatchingDepartureAlarm,
   requestDepartureNotificationPermission,
 } from "../../lib/departureAlarm";
+import { applyWalkProfile, formatWalkSpeedKmh, type WalkProfile } from "../../lib/walkProfile";
 
 const modeOrder: EtaMode[] = ["safe", "balanced", "punctual"];
 
@@ -50,6 +51,7 @@ export function RouteResultScreen() {
     departureAlarm,
     scheduleDepartureAlarm,
     cancelDepartureAlarm,
+    walkProfile,
   } = useRouteState();
   const [now, setNow] = useState(() => new Date());
   const [signalLookupState, setSignalLookupState] = useState<SignalCrossroadLookupState>({ status: "idle" });
@@ -70,7 +72,7 @@ export function RouteResultScreen() {
       ? routePlanState.request
       : searchRequest
     : null;
-  const modePlans = planRequest ? buildModePlans(planRequest, routePlanState, now) : null;
+  const modePlans = planRequest ? buildModePlans(planRequest, routePlanState, now, walkProfile) : null;
   const plan = modePlans?.[selectedMode] ?? null;
   const signalRouteKey = plan ? createWalkingRouteSignalKey(plan.segments) : "";
 
@@ -218,6 +220,11 @@ export function RouteResultScreen() {
               />
               <TimeDisplay label="총 소요" time={formatDurationCompact(plan.totalDuration)} />
             </div>
+            {plan.walkProfileApplied && (
+              <div className="-mt-1 mb-4 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700">
+                내 보행 속도 반영 ({formatWalkSpeedKmh(plan.walkProfileApplied.speedMps)} km/h)
+              </div>
+            )}
 
             <div className="my-4 h-px bg-neutral-200" />
 
@@ -587,9 +594,10 @@ function buildModePlans(
   request: EtaPlan["request"],
   routePlanState: RoutePlanState,
   now: Date,
+  walkProfile: WalkProfile | null,
 ): Record<EtaMode, EtaPlan> {
   return Object.fromEntries(
-    modeOrder.map((mode) => [mode, buildPlanForMode(request, routePlanState, mode, now)]),
+    modeOrder.map((mode) => [mode, buildPlanForMode(request, routePlanState, mode, now, walkProfile)]),
   ) as Record<EtaMode, EtaPlan>;
 }
 
@@ -598,16 +606,22 @@ function buildPlanForMode(
   routePlanState: RoutePlanState,
   mode: EtaMode,
   now: Date,
+  walkProfile: WalkProfile | null,
 ): EtaPlan {
+  let plan: EtaPlan;
+
   if (routePlanState.status === "success" && routePlanState.transitResponse && routePlanState.source === "tmap") {
     try {
-      return mapTransitResponseToPlan(routePlanState.request, routePlanState.transitResponse, mode, now);
+      plan = mapTransitResponseToPlan(routePlanState.request, routePlanState.transitResponse, mode, now);
+      return applyWalkProfile(plan, walkProfile, now);
     } catch {
-      return createEtaPlan(request, mode, now);
+      plan = createEtaPlan(request, mode, now);
+      return applyWalkProfile(plan, walkProfile, now);
     }
   }
 
-  return createEtaPlan(request, mode, now);
+  plan = createEtaPlan(request, mode, now);
+  return applyWalkProfile(plan, walkProfile, now);
 }
 
 function getActionTitle(plan: EtaPlan): string {

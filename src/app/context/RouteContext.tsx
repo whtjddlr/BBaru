@@ -21,6 +21,14 @@ import {
   readDepartureAlarm,
   writeDepartureAlarm,
 } from "../lib/departureAlarm";
+import {
+  applyWalkProfile,
+  clearWalkProfile,
+  readWalkProfile,
+  updateWalkProfile,
+  WalkProfile,
+  writeWalkProfile,
+} from "../lib/walkProfile";
 
 const ACTIVE_SEARCH_KEY = "bbaru:active-search";
 const RECENT_ROUTES_KEY = "bbaru:recent-routes";
@@ -56,11 +64,14 @@ interface RouteContextValue {
   recentRoutes: RecentRoute[];
   routePlanState: RoutePlanState;
   departureAlarm: DepartureAlarm | null;
+  walkProfile: WalkProfile | null;
   hasActiveSearch: boolean;
   setSelectedMode: (mode: EtaMode) => void;
   startSearch: (request: EtaSearchRequest) => EtaSearchRequest;
   retrySearch: () => void;
   rerouteFromPosition: (position: GeoPoint) => Promise<EtaPlan>;
+  recordWalkPaceSample: (speedMps: number) => void;
+  resetWalkProfile: () => void;
   clearSearch: () => void;
   scheduleDepartureAlarm: (plan: EtaPlan) => DepartureAlarm;
   cancelDepartureAlarm: () => void;
@@ -80,7 +91,13 @@ export function RouteProvider({ children }: { children: ReactNode }) {
   const [recentRoutes, setRecentRoutes] = useState<RecentRoute[]>(() => readRecentRoutes());
   const [routePlanState, setRoutePlanState] = useState<RoutePlanState>({ status: "idle" });
   const [departureAlarm, setDepartureAlarm] = useState<DepartureAlarm | null>(() => readDepartureAlarm());
+  const [walkProfile, setWalkProfile] = useState<WalkProfile | null>(() => readWalkProfile());
   const routeRequestIdRef = useRef(0);
+  const walkProfileRef = useRef<WalkProfile | null>(walkProfile);
+
+  useEffect(() => {
+    walkProfileRef.current = walkProfile;
+  }, [walkProfile]);
 
   const loadRoutePlan = useCallback(async (request: EtaSearchRequest) => {
     const requestId = routeRequestIdRef.current + 1;
@@ -92,7 +109,12 @@ export function RouteProvider({ children }: { children: ReactNode }) {
     try {
       const resolvedRequest = await resolveSearchRequest(normalizedRequest);
       const response = await fetchTransitRoutes(resolvedRequest.originPoint!, resolvedRequest.destinationPoint!, 3);
-      const plan = mapTransitResponseToPlan(resolvedRequest, response, "balanced", new Date());
+      const now = new Date();
+      const plan = applyWalkProfile(
+        mapTransitResponseToPlan(resolvedRequest, response, "balanced", now),
+        walkProfileRef.current,
+        now,
+      );
 
       if (routeRequestIdRef.current !== requestId) {
         return;
@@ -121,7 +143,12 @@ export function RouteProvider({ children }: { children: ReactNode }) {
       }
 
       try {
-        const fallbackPlan = createEtaPlan(normalizedRequest, "balanced", new Date());
+        const now = new Date();
+        const fallbackPlan = applyWalkProfile(
+          createEtaPlan(normalizedRequest, "balanced", now),
+          walkProfileRef.current,
+          now,
+        );
         const nextRecentRoutes = upsertRecentRoute(readRecentRoutes(), {
           ...normalizedRequest,
           totalDuration: fallbackPlan.totalDuration,
@@ -171,6 +198,7 @@ export function RouteProvider({ children }: { children: ReactNode }) {
       recentRoutes,
       routePlanState,
       departureAlarm,
+      walkProfile,
       hasActiveSearch: Boolean(searchRequest),
       setSelectedMode: (mode) => {
         setSelectedModeState(mode);
@@ -201,7 +229,12 @@ export function RouteProvider({ children }: { children: ReactNode }) {
 
         const rerouteRequest = createRerouteRequest(baseRequest, position);
         const response = await fetchTransitRoutes(rerouteRequest.originPoint!, rerouteRequest.destinationPoint!, 1);
-        const plan = createReroutePlan(baseRequest, position, response, selectedMode, new Date());
+        const now = new Date();
+        const plan = applyWalkProfile(
+          createReroutePlan(baseRequest, position, response, selectedMode, now),
+          walkProfileRef.current,
+          now,
+        );
 
         setSearchRequest(rerouteRequest);
         setRoutePlanState({
@@ -215,6 +248,21 @@ export function RouteProvider({ children }: { children: ReactNode }) {
         writeActiveSearch({ request: rerouteRequest, mode: selectedMode });
 
         return plan;
+      },
+      recordWalkPaceSample: (speedMps) => {
+        setWalkProfile((currentProfile) => {
+          const nextProfile = updateWalkProfile(currentProfile, speedMps, new Date());
+
+          writeWalkProfile(nextProfile);
+          walkProfileRef.current = nextProfile;
+
+          return nextProfile;
+        });
+      },
+      resetWalkProfile: () => {
+        clearWalkProfile();
+        walkProfileRef.current = null;
+        setWalkProfile(null);
       },
       clearSearch: () => {
         routeRequestIdRef.current += 1;
@@ -263,7 +311,7 @@ export function RouteProvider({ children }: { children: ReactNode }) {
         setRecentRoutes(readRecentRoutes());
       },
     }),
-    [departureAlarm, loadRoutePlan, recentRoutes, routePlanState, searchRequest, selectedMode],
+    [departureAlarm, loadRoutePlan, recentRoutes, routePlanState, searchRequest, selectedMode, walkProfile],
   );
 
   return <RouteContext.Provider value={value}>{children}</RouteContext.Provider>;

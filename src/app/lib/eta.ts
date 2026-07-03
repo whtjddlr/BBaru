@@ -71,6 +71,11 @@ export interface EtaPlan {
     transferCount?: number;
     fare?: number;
   };
+  walkProfileApplied?: {
+    speedMps: number;
+    sampleCount: number;
+    scale: number;
+  };
 }
 
 export interface EtaStatus {
