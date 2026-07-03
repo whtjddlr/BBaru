@@ -57,6 +57,15 @@ import {
   selectProgressPercent,
 } from "../../lib/tracking";
 import { mapTransitResponseToPlan } from "../../lib/transitMapper";
+import {
+  createInitialRerouteState,
+  recordRerouteAttempt,
+  resetRerouteOffRouteTimer,
+  REROUTE_FAILURE_BACKOFF_MS,
+  shouldReroute,
+  updateRerouteStateForPosition,
+  type RerouteState,
+} from "../../lib/reroute";
 
 type SpeedMode = "fast" | "steady" | "relaxed";
 type TrackingMode = "live" | "demo";
@@ -99,12 +108,18 @@ interface LiveTrackingState {
   weakSignalMessage: string | null;
 }
 
+type RerouteStatus =
+  | { kind: "idle" }
+  | { kind: "loading" }
+  | { kind: "success"; message: string }
+  | { kind: "error"; message: string };
+
 const TICK_SECONDS = 0.5;
 const LIVE_UI_THROTTLE_MS = 2000;
 
 export function EnRouteScreen() {
   const navigate = useNavigate();
-  const { clearSearch, searchRequest, selectedMode, routePlanState } = useRouteState();
+  const { clearSearch, searchRequest, selectedMode, routePlanState, rerouteFromPosition } = useRouteState();
   const [simulation, setSimulation] = useState<SimulationState>({
     elapsedSeconds: 0,
     manualPaused: false,
@@ -121,6 +136,8 @@ export function EnRouteScreen() {
   });
   const [speedMode, setSpeedMode] = useState<SpeedMode>("steady");
   const [activeSignalInfo, setActiveSignalInfo] = useState<ActiveSignalInfo | null>(null);
+  const [rerouteStatus, setRerouteStatus] = useState<RerouteStatus>({ kind: "idle" });
+  const [rerouteCheckTick, setRerouteCheckTick] = useState(0);
   const [signalNoDataVisible, setSignalNoDataVisible] = useState(false);
   const [signalNoDataDismissed, setSignalNoDataDismissed] = useState(false);
   const [signalNow, setSignalNow] = useState(() => Date.now());
@@ -133,6 +150,8 @@ export function EnRouteScreen() {
   const transientGeolocationErrorCountRef = useRef(0);
   const lastLivePositionReceivedAtRef = useRef<number | null>(null);
   const signalNoDataDismissedRef = useRef(false);
+  const rerouteStateRef = useRef<RerouteState>(createInitialRerouteState());
+  const rerouteInFlightRef = useRef(false);
   const plan = useMemo(() => {
     if (!searchRequest) {
       return null;
@@ -176,6 +195,7 @@ export function EnRouteScreen() {
   const signalRouteKey = signalLookupPoints
     .map((point) => `${point.lat.toFixed(6)},${point.lng.toFixed(6)}`)
     .join("|");
+  const isLiveMode = trackingMode === "live";
 
   useEffect(() => {
     activeSignalInfoRef.current = activeSignalInfo;
@@ -385,6 +405,7 @@ export function EnRouteScreen() {
       return;
     }
 
+    rerouteStateRef.current = resetRerouteOffRouteTimer(rerouteStateRef.current);
     handledWaitTriggerIdsRef.current = new Set();
     celebratedRef.current = false;
     setSimulation({
@@ -397,6 +418,76 @@ export function EnRouteScreen() {
     setSignalNoDataDismissed(false);
     signalNoDataDismissedRef.current = false;
   }, [plan]);
+
+  useEffect(() => {
+    if (!isLiveMode || !liveProjection || !liveTracking.position || arrived) {
+      rerouteStateRef.current = resetRerouteOffRouteTimer(rerouteStateRef.current);
+      return;
+    }
+
+    const now = new Date();
+    const nextRerouteState = updateRerouteStateForPosition(
+      rerouteStateRef.current,
+      now,
+      liveProjection.offRouteDistanceMeters,
+    );
+
+    rerouteStateRef.current = nextRerouteState;
+
+    if (!shouldReroute(nextRerouteState, now) || rerouteInFlightRef.current) {
+      return;
+    }
+
+    rerouteInFlightRef.current = true;
+    setRerouteStatus({ kind: "loading" });
+
+    rerouteFromPosition(liveTracking.position)
+      .then(() => {
+        const completedAt = new Date();
+        rerouteStateRef.current = recordRerouteAttempt(rerouteStateRef.current, completedAt);
+        setRerouteStatus({ kind: "success", message: "새 경로로 안내합니다" });
+      })
+      .catch(() => {
+        const failedAt = new Date();
+        rerouteStateRef.current = recordRerouteAttempt(
+          rerouteStateRef.current,
+          failedAt,
+          REROUTE_FAILURE_BACKOFF_MS,
+        );
+        setRerouteStatus({ kind: "error", message: "재탐색 실패 — 기존 경로로 계속 안내합니다" });
+      })
+      .finally(() => {
+        rerouteInFlightRef.current = false;
+      });
+  }, [arrived, isLiveMode, liveProjection, liveTracking.position, rerouteCheckTick, rerouteFromPosition]);
+
+  useEffect(() => {
+    if (!isLiveMode || !liveProjection || arrived || !isOffRoute(liveProjection.offRouteDistanceMeters)) {
+      return undefined;
+    }
+
+    const timer = window.setInterval(() => {
+      setRerouteCheckTick((current) => current + 1);
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [arrived, isLiveMode, liveProjection]);
+
+  useEffect(() => {
+    if (rerouteStatus.kind !== "success" && rerouteStatus.kind !== "error") {
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => {
+      setRerouteStatus({ kind: "idle" });
+    }, 8000);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [rerouteStatus]);
 
   useEffect(() => {
     if (!arrived || celebratedRef.current) {
@@ -586,7 +677,6 @@ export function EnRouteScreen() {
     return null;
   }
 
-  const isLiveMode = trackingMode === "live";
   const selectedSpeed = speedOptions.find((option) => option.id === speedMode) ?? speedOptions[1];
   const adjustedDeltaSeconds = isLiveMode ? 0 : scaleSpeedDelta(selectedSpeed.deltaSeconds, progress);
   const signalDelaySeconds =
@@ -689,17 +779,21 @@ export function EnRouteScreen() {
           <ActionCard
             icon={Zap}
             title={
-              isLiveMode
+              isLiveMode && rerouteStatus.kind === "loading"
+                ? "경로를 다시 찾는 중..."
+                : isLiveMode
                 ? getLiveTrackingActionTitle(arrived, liveTracking, liveOffRoute, currentPaceAdvice.title)
                 : getDemoActionTitle(arrived, simulation, speedMode)
             }
             description={
-              isLiveMode
+              isLiveMode && rerouteStatus.kind === "loading"
+                ? "현재 위치에서 목적지까지 새 경로를 조회하고 있습니다."
+                : isLiveMode
                 ? getLiveTrackingActionDescription(arrived, liveTracking, liveProjection, liveOffRoute, currentPaceAdvice.description)
                 : getDemoActionDescription(arrived, simulation, speedMode, adjustedDeviation)
             }
             variant={
-              liveOffRoute || simulation.signalWait
+              rerouteStatus.kind === "loading" || liveOffRoute || simulation.signalWait
                 ? "warning"
                 : arrived || currentPaceAdvice.tone === "success"
                   ? "success"
@@ -707,8 +801,8 @@ export function EnRouteScreen() {
                     ? "primary"
                     : "warning"
             }
-            role={liveOffRoute ? "status" : undefined}
-            ariaLive={liveOffRoute ? "polite" : undefined}
+            role={liveOffRoute || rerouteStatus.kind === "loading" ? "status" : undefined}
+            ariaLive={liveOffRoute || rerouteStatus.kind === "loading" ? "polite" : undefined}
           >
             <div className="mt-3 border-t border-white/20 pt-3">
               <div className="flex items-center justify-between text-sm">
@@ -721,6 +815,34 @@ export function EnRouteScreen() {
               </div>
             </div>
           </ActionCard>
+
+          {(rerouteStatus.kind === "success" || rerouteStatus.kind === "error") && (
+            <div
+              role="status"
+              aria-live="polite"
+              className={`rounded-2xl border p-4 shadow-lg ${
+                rerouteStatus.kind === "success"
+                  ? "border-emerald-200 bg-emerald-50"
+                  : "border-amber-200 bg-amber-50"
+              }`}
+            >
+              <div className="flex items-start gap-3">
+                <AlertCircle
+                  className={`mt-0.5 size-5 shrink-0 ${
+                    rerouteStatus.kind === "success" ? "text-emerald-600" : "text-amber-600"
+                  }`}
+                  aria-hidden="true"
+                />
+                <div
+                  className={`min-w-0 flex-1 text-sm font-semibold ${
+                    rerouteStatus.kind === "success" ? "text-emerald-900" : "text-amber-900"
+                  }`}
+                >
+                  {rerouteStatus.message}
+                </div>
+              </div>
+            </div>
+          )}
 
           {activeSignalInfo && activeSignal && crossingAdvice && (
             <SignalStatusCard

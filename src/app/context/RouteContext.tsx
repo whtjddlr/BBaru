@@ -11,6 +11,7 @@ import {
 import { createEtaPlan, EtaMode, EtaPlan, EtaSearchRequest, formatClock, GeoPoint, normalizeRequest } from "../lib/eta";
 import { fetchTransitRoutes, searchPois, TmapTransitResponse } from "../lib/tmap";
 import { mapTransitResponseToPlan } from "../lib/transitMapper";
+import { createReroutePlan, createRerouteRequest } from "../lib/reroute";
 import {
   clearDepartureAlarm,
   createDepartureAlarm,
@@ -59,6 +60,7 @@ interface RouteContextValue {
   setSelectedMode: (mode: EtaMode) => void;
   startSearch: (request: EtaSearchRequest) => EtaSearchRequest;
   retrySearch: () => void;
+  rerouteFromPosition: (position: GeoPoint) => Promise<EtaPlan>;
   clearSearch: () => void;
   scheduleDepartureAlarm: (plan: EtaPlan) => DepartureAlarm;
   cancelDepartureAlarm: () => void;
@@ -189,6 +191,30 @@ export function RouteProvider({ children }: { children: ReactNode }) {
         }
 
         void loadRoutePlan(searchRequest);
+      },
+      rerouteFromPosition: async (position) => {
+        const baseRequest = routePlanState.status === "success" ? routePlanState.request : searchRequest;
+
+        if (!baseRequest) {
+          throw new Error("활성 경로가 없어 경로를 재탐색할 수 없습니다.");
+        }
+
+        const rerouteRequest = createRerouteRequest(baseRequest, position);
+        const response = await fetchTransitRoutes(rerouteRequest.originPoint!, rerouteRequest.destinationPoint!, 1);
+        const plan = createReroutePlan(baseRequest, position, response, selectedMode, new Date());
+
+        setSearchRequest(rerouteRequest);
+        setRoutePlanState({
+          status: "success",
+          request: rerouteRequest,
+          plan,
+          source: "tmap",
+          isFallback: false,
+          transitResponse: response,
+        });
+        writeActiveSearch({ request: rerouteRequest, mode: selectedMode });
+
+        return plan;
       },
       clearSearch: () => {
         routeRequestIdRef.current += 1;
