@@ -316,9 +316,17 @@ function isEtaMode(value: unknown): value is EtaMode {
 }
 
 function getErrorMessage(error: unknown): string {
+  if (isOffline()) {
+    return "오프라인 상태입니다. 저장된 앱 셸과 데모 경로로 계속 이용할 수 있습니다.";
+  }
+
   return error instanceof Error ? error.message : "경로 조회 중 알 수 없는 오류가 발생했습니다.";
 }
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
+}
+
+function isOffline(): boolean {
+  return typeof navigator !== "undefined" && navigator.onLine === false;
 }

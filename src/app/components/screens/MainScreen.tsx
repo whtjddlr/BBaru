@@ -1,9 +1,10 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { Search, Clock, MapPin, TrendingUp, Navigation2 } from "lucide-react";
+import { Search, Clock, MapPin, TrendingUp, Navigation2, Smartphone, X } from "lucide-react";
 import { useRouteState } from "../../context/RouteContext";
 import { formatDurationCompact, GeoPoint } from "../../lib/eta";
 import { searchPois, TmapPoi } from "../../lib/tmap";
+import { useInstallPrompt } from "../../lib/useInstallPrompt";
 
 export function MainScreen() {
   const navigate = useNavigate();
@@ -15,6 +16,7 @@ export function MainScreen() {
   const [targetTime, setTargetTime] = useState(searchRequest?.targetTime ?? getDefaultTargetTime());
   const originSuggestions = usePoiSuggestions(origin, originPoint);
   const destinationSuggestions = usePoiSuggestions(destination, destinationPoint);
+  const installPrompt = useInstallPrompt();
   const canSearch = origin.trim().length > 0 && destination.trim().length > 0;
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -176,6 +178,39 @@ export function MainScreen() {
             </div>
           </div>
         </section>
+
+        {installPrompt.canPrompt && (
+          <section aria-label="앱 설치" className="mt-6">
+            <div className="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
+              <div className="mb-3 flex items-start gap-3">
+                <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-50">
+                  <Smartphone className="size-5 text-blue-600" aria-hidden="true" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="mb-1 text-sm font-semibold text-neutral-900">홈 화면에 추가</div>
+                  <div className="text-xs text-neutral-500">
+                    BBARU를 앱처럼 바로 열 수 있습니다.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  aria-label="설치 안내 닫기"
+                  onClick={installPrompt.dismiss}
+                  className="-mr-1 -mt-1 rounded-lg p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600"
+                >
+                  <X className="size-4" aria-hidden="true" />
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={installPrompt.promptInstall}
+                className="w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white shadow-sm"
+              >
+                홈 화면에 추가
+              </button>
+            </div>
+          </section>
+        )}
       </section>
     </main>
   );
