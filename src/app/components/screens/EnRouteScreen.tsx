@@ -39,13 +39,14 @@ import {
 import type { GeoPosition, GeolocationPermissionState } from "../../lib/geolocation";
 import {
   adviseCrossing,
-  fetchCrossroads,
-  fetchRealtimeSignals,
+  fetchCrossroadsStrict,
+  fetchRealtimeSignalsStrict,
   findSignalCrossroadsForRoute,
   getWalkingRoutePoints,
 } from "../../lib/signal";
 import type { CrossingAdvice, PedestrianSignal } from "../../lib/signal";
 import {
+  canUseLiveTracking,
   estimateArrival as estimateLiveArrival,
   getDistanceMeters,
   isOffRoute,
@@ -111,6 +112,7 @@ export function EnRouteScreen() {
     accumulatedSignalDelaySeconds: 0,
   });
   const [trackingMode, setTrackingMode] = useState<TrackingMode>("live");
+  const [liveUnavailableMessage, setLiveUnavailableMessage] = useState<string | null>(null);
   const [liveTracking, setLiveTracking] = useState<LiveTrackingState>({
     permission: "checking",
     position: null,
@@ -119,6 +121,8 @@ export function EnRouteScreen() {
   });
   const [speedMode, setSpeedMode] = useState<SpeedMode>("steady");
   const [activeSignalInfo, setActiveSignalInfo] = useState<ActiveSignalInfo | null>(null);
+  const [signalNoDataVisible, setSignalNoDataVisible] = useState(false);
+  const [signalNoDataDismissed, setSignalNoDataDismissed] = useState(false);
   const [signalNow, setSignalNow] = useState(() => Date.now());
   const celebratedRef = useRef(false);
   const handledWaitTriggerIdsRef = useRef<Set<string>>(new Set());
@@ -128,6 +132,7 @@ export function EnRouteScreen() {
   const liveThrottleTimerRef = useRef<number | null>(null);
   const transientGeolocationErrorCountRef = useRef(0);
   const lastLivePositionReceivedAtRef = useRef<number | null>(null);
+  const signalNoDataDismissedRef = useRef(false);
   const plan = useMemo(() => {
     if (!searchRequest) {
       return null;
@@ -144,6 +149,7 @@ export function EnRouteScreen() {
     () => (plan ? getRouteCoordinates(plan.segments, [plan.request.originPoint, plan.request.destinationPoint]) : []),
     [plan],
   );
+  const liveTrackingAvailable = Boolean(plan && canUseLiveTracking(plan));
   const liveProjection = useMemo(
     () =>
       trackingMode === "live" && liveTracking.position && routeCoords.length > 0
@@ -176,7 +182,27 @@ export function EnRouteScreen() {
   }, [activeSignalInfo]);
 
   useEffect(() => {
-    if (!plan || trackingMode !== "live") {
+    signalNoDataDismissedRef.current = signalNoDataDismissed;
+  }, [signalNoDataDismissed]);
+
+  useEffect(() => {
+    if (!plan) {
+      return;
+    }
+
+    if (trackingMode === "live" && !liveTrackingAvailable) {
+      setLiveUnavailableMessage("실경로 좌표가 없어 실시간 추적을 사용할 수 없습니다. 데모 시뮬레이션으로 진행합니다.");
+      setTrackingMode("demo");
+      return;
+    }
+
+    if (liveTrackingAvailable) {
+      setLiveUnavailableMessage(null);
+    }
+  }, [liveTrackingAvailable, plan, trackingMode]);
+
+  useEffect(() => {
+    if (!plan || trackingMode !== "live" || !liveTrackingAvailable) {
       return undefined;
     }
 
@@ -352,7 +378,7 @@ export function EnRouteScreen() {
       lastLivePositionReceivedAtRef.current = null;
       cleanup?.();
     };
-  }, [plan, trackingMode]);
+  }, [liveTrackingAvailable, plan, trackingMode]);
 
   useEffect(() => {
     if (!plan) {
@@ -367,6 +393,9 @@ export function EnRouteScreen() {
       signalWait: null,
       accumulatedSignalDelaySeconds: 0,
     });
+    setSignalNoDataVisible(false);
+    setSignalNoDataDismissed(false);
+    signalNoDataDismissedRef.current = false;
   }, [plan]);
 
   useEffect(() => {
@@ -464,46 +493,78 @@ export function EnRouteScreen() {
     }
 
     let cancelled = false;
+    let timer: number | null = null;
+    let consecutiveFailures = 0;
 
     const updateSignalInfo = async () => {
       if (signalLookupPoints.length === 0) {
         if (!cancelled) {
           setActiveSignalInfo(null);
+          if (!signalNoDataDismissedRef.current) {
+            setSignalNoDataVisible(true);
+          }
         }
         return;
       }
 
-      const [crossroads, realtimeSignals] = await Promise.all([fetchCrossroads(), fetchRealtimeSignals()]);
-      const [nearestSignalCrossroad] = findSignalCrossroadsForRoute(signalLookupPoints, crossroads, realtimeSignals);
-      const selectedSignal = nearestSignalCrossroad
-        ? selectPedestrianSignal(nearestSignalCrossroad.signals)
-        : null;
+      try {
+        const [crossroads, realtimeSignals] = await Promise.all([fetchCrossroadsStrict(), fetchRealtimeSignalsStrict()]);
+        const [nearestSignalCrossroad] = findSignalCrossroadsForRoute(signalLookupPoints, crossroads, realtimeSignals);
+        const selectedSignal = nearestSignalCrossroad
+          ? selectPedestrianSignal(nearestSignalCrossroad.signals)
+          : null;
 
-      if (cancelled) {
-        return;
+        if (cancelled) {
+          return;
+        }
+
+        consecutiveFailures = 0;
+        setSignalNow(Date.now());
+        setActiveSignalInfo(
+          nearestSignalCrossroad && selectedSignal
+            ? {
+                crossroadName: nearestSignalCrossroad.crossroad.name,
+                distanceMeters: nearestSignalCrossroad.crossroad.distanceMeters,
+                signal: selectedSignal,
+                fetchedAt: Date.now(),
+              }
+            : null,
+        );
+        setSignalNoDataVisible(Boolean(!nearestSignalCrossroad && !signalNoDataDismissedRef.current));
+        scheduleNextSignalPoll(15000);
+      } catch {
+        if (cancelled) {
+          return;
+        }
+
+        consecutiveFailures += 1;
+        setActiveSignalInfo(null);
+        setSignalNoDataVisible(false);
+
+        if (consecutiveFailures === 1) {
+          scheduleNextSignalPoll(60000);
+        }
       }
+    };
 
-      setSignalNow(Date.now());
-      setActiveSignalInfo(
-        nearestSignalCrossroad && selectedSignal
-          ? {
-              crossroadName: nearestSignalCrossroad.crossroad.name,
-              distanceMeters: nearestSignalCrossroad.crossroad.distanceMeters,
-              signal: selectedSignal,
-              fetchedAt: Date.now(),
-            }
-          : null,
-      );
+    const scheduleNextSignalPoll = (delayMs: number) => {
+      timer = window.setTimeout(() => {
+        timer = null;
+        if (cancelled) {
+          return;
+        }
+
+        void updateSignalInfo();
+      }, delayMs);
     };
 
     void updateSignalInfo();
-    const timer = window.setInterval(() => {
-      void updateSignalInfo();
-    }, 15000);
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
     };
   }, [arrived, signalRouteKey]);
 
@@ -646,6 +707,8 @@ export function EnRouteScreen() {
                     ? "primary"
                     : "warning"
             }
+            role={liveOffRoute ? "status" : undefined}
+            ariaLive={liveOffRoute ? "polite" : undefined}
           >
             <div className="mt-3 border-t border-white/20 pt-3">
               <div className="flex items-center justify-between text-sm">
@@ -668,8 +731,42 @@ export function EnRouteScreen() {
             />
           )}
 
+          {signalNoDataVisible && (
+            <div role="status" aria-live="polite" className="rounded-2xl border border-neutral-200 bg-white p-3 shadow-lg">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="mt-0.5 size-4 shrink-0 text-neutral-500" aria-hidden="true" />
+                <div className="min-w-0 flex-1 text-xs font-semibold text-neutral-600">
+                  이 경로 주변 교차로는 현재 실시간 신호 정보가 제공되지 않습니다.
+                </div>
+                <button
+                  type="button"
+                  aria-label="실시간 신호 정보 없음 안내 닫기"
+                  onClick={() => {
+                    setSignalNoDataDismissed(true);
+                    setSignalNoDataVisible(false);
+                  }}
+                  className="-mr-1 -mt-1 rounded-lg px-2 py-1 text-xs font-semibold text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600"
+                >
+                  닫기
+                </button>
+              </div>
+            </div>
+          )}
+
+          {liveUnavailableMessage && (
+            <div role="status" aria-live="polite" className="rounded-2xl border border-amber-200 bg-amber-50 p-4 shadow-lg">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="mt-0.5 size-5 shrink-0 text-amber-600" aria-hidden="true" />
+                <div className="min-w-0 flex-1">
+                  <div className="mb-1 text-sm font-semibold text-amber-900">실시간 추적 사용 불가</div>
+                  <div className="text-xs text-amber-700">{liveUnavailableMessage}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {isLiveMode && liveTracking.weakSignalMessage && (
-            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 shadow-lg">
+            <div role="status" aria-live="polite" className="rounded-2xl border border-amber-200 bg-amber-50 p-4 shadow-lg">
               <div className="mb-3 flex items-start gap-3">
                 <AlertCircle className="mt-0.5 size-5 shrink-0 text-amber-600" aria-hidden="true" />
                 <div className="min-w-0 flex-1">

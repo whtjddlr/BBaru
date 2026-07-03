@@ -66,60 +66,68 @@ interface CrossroadsCache {
 }
 
 export async function fetchCrossroads(): Promise<Crossroad[]> {
+  try {
+    return await fetchCrossroadsStrict();
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchCrossroadsStrict(): Promise<Crossroad[]> {
   const cached = readCrossroadsCache();
 
   if (cached) {
     return cached;
   }
 
-  try {
-    const allCrossroads: Crossroad[] = [];
-    const pageSize = 1000;
+  const allCrossroads: Crossroad[] = [];
+  const pageSize = 1000;
 
-    for (let pageNo = 1; pageNo <= 3; pageNo += 1) {
-      const url = createSignalUrl("crossroads", {
-        pageNo: String(pageNo),
-        numOfRows: String(pageSize),
-      });
-      const data = await fetchJson<DataGoKrResponse<CrossroadApiItem>>(url);
-      const items = getResponseItems(data);
+  for (let pageNo = 1; pageNo <= 3; pageNo += 1) {
+    const url = createSignalUrl("crossroads", {
+      pageNo: String(pageNo),
+      numOfRows: String(pageSize),
+    });
+    const data = await fetchJson<DataGoKrResponse<CrossroadApiItem>>(url);
+    const items = getResponseItems(data);
 
-      allCrossroads.push(...items.map(parseCrossroad).filter((crossroad): crossroad is Crossroad => Boolean(crossroad)));
+    allCrossroads.push(...items.map(parseCrossroad).filter((crossroad): crossroad is Crossroad => Boolean(crossroad)));
 
-      if (items.length < pageSize) {
-        break;
-      }
+    if (items.length < pageSize) {
+      break;
     }
-
-    writeCrossroadsCache(allCrossroads);
-
-    return allCrossroads;
-  } catch {
-    return [];
   }
+
+  writeCrossroadsCache(allCrossroads);
+
+  return allCrossroads;
 }
 
 export async function fetchRealtimeSignals(): Promise<Map<string, SignalRealtimeItem>> {
   try {
-    const url = createSignalUrl("realtime", {
-      pageNo: "1",
-      numOfRows: "1000",
-    });
-    const data = await fetchJson<DataGoKrResponse<SignalRealtimeItem>>(url);
-    const items = getResponseItems(data);
-
-    return items.reduce((index, item) => {
-      const id = String(item.crsrdId ?? "").trim();
-
-      if (id) {
-        index.set(id, item);
-      }
-
-      return index;
-    }, new Map<string, SignalRealtimeItem>());
+    return await fetchRealtimeSignalsStrict();
   } catch {
     return new Map();
   }
+}
+
+export async function fetchRealtimeSignalsStrict(): Promise<Map<string, SignalRealtimeItem>> {
+  const url = createSignalUrl("realtime", {
+    pageNo: "1",
+    numOfRows: "1000",
+  });
+  const data = await fetchJson<DataGoKrResponse<SignalRealtimeItem>>(url);
+  const items = getResponseItems(data);
+
+  return items.reduce((index, item) => {
+    const id = String(item.crsrdId ?? "").trim();
+
+    if (id) {
+      index.set(id, item);
+    }
+
+    return index;
+  }, new Map<string, SignalRealtimeItem>());
 }
 
 export function parsePedestrianSignals(item: SignalRealtimeItem | null | undefined): PedestrianSignal[] {
@@ -369,7 +377,7 @@ async function fetchJson<T>(url: string): Promise<T> {
     const data = (await response.json()) as T;
     const resultCode = (data as DataGoKrResponse<unknown>).header?.resultCode;
 
-    if (resultCode !== "K0") {
+    if (resultCode !== "K0" && resultCode !== "K3") {
       throw new Error(`공공데이터 API 응답 오류: ${resultCode ?? "unknown"}`);
     }
 

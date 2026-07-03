@@ -137,6 +137,14 @@ export function getRouteCoordinates(
   return routePoints;
 }
 
+export function canUseLiveTracking(plan: Pick<EtaPlan, "segments">): boolean {
+  return getGeometryCoordinates(plan.segments).length >= 2;
+}
+
+function getGeometryCoordinates(segments: RouteSegment[]): GeoPoint[] {
+  return segments.flatMap((segment) => segment.geometry ?? []);
+}
+
 export function selectProgressPercent(
   mode: TrackingProgressMode,
   liveProjection: Pick<RouteProjection, "progressPercent"> | null,

@@ -6,6 +6,8 @@ interface ActionCardProps {
   title: string;
   description?: string;
   variant?: "primary" | "warning" | "success" | "neutral";
+  role?: "status" | "alert";
+  ariaLive?: "off" | "polite" | "assertive";
   children?: ReactNode;
 }
 
@@ -14,6 +16,8 @@ export function ActionCard({
   title,
   description,
   variant = "primary",
+  role,
+  ariaLive,
   children
 }: ActionCardProps) {
   const variants = {
@@ -31,7 +35,7 @@ export function ActionCard({
   };
 
   return (
-    <div className={`rounded-2xl p-4 shadow-sm ${variants[variant]}`}>
+    <div role={role} aria-live={ariaLive} className={`rounded-2xl p-4 shadow-sm ${variants[variant]}`}>
       <div className="flex items-start gap-3">
         <div className={`rounded-xl p-2.5 ${iconVariants[variant]}`}>
           <Icon className="w-5 h-5" />

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import transitResponse from "./__fixtures__/transit-response.json";
-import { createEtaPlanFromSegments } from "./eta.ts";
+import { createEtaPlan, createEtaPlanFromSegments } from "./eta.ts";
 import {
+  canUseLiveTracking,
   estimateArrival,
   getDistanceMeters,
   getRouteCoordinates,
@@ -167,5 +168,25 @@ describe("tracking with Tmap transit fixture geometry", () => {
         demoArrived: false,
       }),
     ).toBe(false);
+  });
+
+  it("allows live tracking when a real transit plan has route geometry", () => {
+    expect(canUseLiveTracking(plan)).toBe(true);
+  });
+});
+
+describe("live tracking eligibility", () => {
+  it("rejects mock ETA plans without route geometry", () => {
+    const mockPlan = createEtaPlan(
+      {
+        origin: "강남역",
+        destination: "선릉역",
+        targetTime: "10:00",
+      },
+      "balanced",
+      new Date("2026-01-01T09:00:00"),
+    );
+
+    expect(canUseLiveTracking(mockPlan)).toBe(false);
   });
 });

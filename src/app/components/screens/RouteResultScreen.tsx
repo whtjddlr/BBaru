@@ -21,8 +21,8 @@ import {
 } from "../../lib/eta";
 import {
   createWalkingRouteSignalKey,
-  fetchCrossroads,
-  fetchRealtimeSignals,
+  fetchCrossroadsStrict,
+  fetchRealtimeSignalsStrict,
   findSignalCrossroadsForRoute,
   getWalkingRoutePoints,
 } from "../../lib/signal";
@@ -30,11 +30,16 @@ import { mapTransitResponseToPlan } from "../../lib/transitMapper";
 
 const modeOrder: EtaMode[] = ["safe", "balanced", "punctual"];
 
+type SignalCrossroadLookupState =
+  | { status: "idle" | "loading" }
+  | { status: "success"; count: number }
+  | { status: "error" };
+
 export function RouteResultScreen() {
   const navigate = useNavigate();
   const { searchRequest, selectedMode, setSelectedMode, routePlanState, retrySearch } = useRouteState();
   const [now, setNow] = useState(() => new Date());
-  const [signalCrossroadCount, setSignalCrossroadCount] = useState<number | null>(null);
+  const [signalLookupState, setSignalLookupState] = useState<SignalCrossroadLookupState>({ status: "idle" });
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -57,25 +62,25 @@ export function RouteResultScreen() {
 
   useEffect(() => {
     if (!plan || !signalRouteKey) {
-      setSignalCrossroadCount(null);
+      setSignalLookupState({ status: "idle" });
       return undefined;
     }
 
     let cancelled = false;
-    setSignalCrossroadCount(null);
+    setSignalLookupState({ status: "loading" });
 
-    Promise.all([fetchCrossroads(), fetchRealtimeSignals()])
+    Promise.all([fetchCrossroadsStrict(), fetchRealtimeSignalsStrict()])
       .then(([crossroads, realtimeSignals]) => {
         const routePoints = getWalkingRoutePoints(plan.segments);
         const signalCrossroads = findSignalCrossroadsForRoute(routePoints, crossroads, realtimeSignals);
 
         if (!cancelled) {
-          setSignalCrossroadCount(signalCrossroads.length);
+          setSignalLookupState({ status: "success", count: signalCrossroads.length });
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setSignalCrossroadCount(0);
+          setSignalLookupState({ status: "error" });
         }
       });
 
@@ -206,6 +211,22 @@ export function RouteResultScreen() {
                 )}
               </div>
             )}
+
+            {plan.status.kind === "target_passed" && (
+              <div role="status" aria-live="polite" className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                <div className="mb-2 text-sm font-semibold text-amber-900">도착 목표 시각이 지났습니다</div>
+                <div className="mb-3 text-xs text-amber-700">
+                  목표 도착 시각을 현재 이후로 수정한 뒤 다시 검색하세요.
+                </div>
+                <button
+                  type="button"
+                  onClick={() => navigate("/")}
+                  className="w-full rounded-lg bg-amber-600 px-3 py-2 text-xs font-semibold text-white"
+                >
+                  시각 수정
+                </button>
+              </div>
+            )}
           </div>
         </section>
 
@@ -332,11 +353,22 @@ export function RouteResultScreen() {
                 </div>
               )}
 
-              {signalCrossroadCount ? (
-                <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-semibold text-emerald-700">
-                  실시간 신호 반영 가능 교차로 {signalCrossroadCount}곳
+              {signalLookupState.status === "success" && (
+                signalLookupState.count > 0 ? (
+                  <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-semibold text-emerald-700">
+                    실시간 신호 반영 가능 교차로 {signalLookupState.count}곳
+                  </div>
+                ) : (
+                  <div className="mt-3 rounded-xl border border-neutral-200 bg-white p-3 text-xs font-semibold text-neutral-600">
+                    이 경로 주변 교차로는 현재 실시간 신호 정보가 제공되지 않습니다.
+                  </div>
+                )
+              )}
+              {signalLookupState.status === "error" && (
+                <div className="mt-3 rounded-xl border border-neutral-200 bg-white p-3 text-xs font-semibold text-neutral-500">
+                  실시간 신호 정보를 확인하지 못했습니다. 경로 안내는 계속 이용할 수 있습니다.
                 </div>
-              ) : null}
+              )}
             </section>
 
             <section aria-labelledby="alternative-routes-title">

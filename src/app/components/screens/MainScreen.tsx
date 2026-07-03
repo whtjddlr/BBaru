@@ -6,6 +6,8 @@ import { formatDurationCompact, GeoPoint } from "../../lib/eta";
 import { searchPois, TmapPoi } from "../../lib/tmap";
 import { useInstallPrompt } from "../../lib/useInstallPrompt";
 
+type PoiSuggestionStatus = "idle" | "loading" | "success" | "empty";
+
 export function MainScreen() {
   const navigate = useNavigate();
   const { recentRoutes, searchRequest, startSearch } = useRouteState();
@@ -17,7 +19,10 @@ export function MainScreen() {
   const originSuggestions = usePoiSuggestions(origin, originPoint);
   const destinationSuggestions = usePoiSuggestions(destination, destinationPoint);
   const installPrompt = useInstallPrompt();
-  const canSearch = origin.trim().length > 0 && destination.trim().length > 0;
+  const sameRoute = origin.trim().length > 0 &&
+    destination.trim().length > 0 &&
+    origin.trim().toLowerCase() === destination.trim().toLowerCase();
+  const canSearch = origin.trim().length > 0 && destination.trim().length > 0 && !sameRoute;
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -48,7 +53,8 @@ export function MainScreen() {
             placeholder="출발지를 입력하세요"
             value={origin}
             point={originPoint}
-            suggestions={originSuggestions}
+            suggestions={originSuggestions.items}
+            suggestionStatus={originSuggestions.status}
             markerClassName="bg-blue-600"
             icon={<MapPin className="size-5 text-neutral-400" aria-hidden="true" />}
             onChange={(value) => {
@@ -67,7 +73,8 @@ export function MainScreen() {
             placeholder="도착지를 입력하세요"
             value={destination}
             point={destinationPoint}
-            suggestions={destinationSuggestions}
+            suggestions={destinationSuggestions.items}
+            suggestionStatus={destinationSuggestions.status}
             markerClassName="bg-red-600"
             icon={<Search className="size-5 text-neutral-400" aria-hidden="true" />}
             onChange={(value) => {
@@ -101,6 +108,11 @@ export function MainScreen() {
             <Navigation2 className="size-5" aria-hidden="true" />
             <span>경로 검색</span>
           </button>
+          {sameRoute && (
+            <p role="status" aria-live="polite" className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700">
+              출발지와 도착지가 같습니다. 다른 도착지를 입력하세요.
+            </p>
+          )}
         </form>
       </section>
 
@@ -181,7 +193,7 @@ export function MainScreen() {
 
         {installPrompt.canPrompt && (
           <section aria-label="앱 설치" className="mt-6">
-            <div className="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
+            <div role="status" aria-live="polite" className="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
               <div className="mb-3 flex items-start gap-3">
                 <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-50">
                   <Smartphone className="size-5 text-blue-600" aria-hidden="true" />
@@ -223,6 +235,7 @@ function PoiField({
   value,
   point,
   suggestions,
+  suggestionStatus,
   markerClassName,
   icon,
   onChange,
@@ -234,6 +247,7 @@ function PoiField({
   value: string;
   point?: GeoPoint;
   suggestions: TmapPoi[];
+  suggestionStatus: PoiSuggestionStatus;
   markerClassName: string;
   icon: ReactNode;
   onChange: (value: string) => void;
@@ -263,49 +277,62 @@ function PoiField({
         <div className="mt-1 px-4 text-xs text-blue-600">좌표 확정됨</div>
       )}
 
-      {suggestions.length > 0 && (
+      {(suggestions.length > 0 || suggestionStatus === "empty") && (
         <div className="absolute left-0 right-0 top-full z-40 mt-2 overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-xl">
-          {suggestions.map((poi) => (
-            <button
-              key={`${poi.name}-${poi.point.lat}-${poi.point.lng}`}
-              type="button"
-              onClick={() => onSelect(poi)}
-              className="flex w-full items-center gap-3 border-b border-neutral-100 px-4 py-3 text-left last:border-b-0 hover:bg-blue-50"
-            >
-              <MapPin className="size-4 shrink-0 text-blue-600" aria-hidden="true" />
-              <span className="min-w-0 flex-1 truncate text-sm font-semibold text-neutral-900">
-                {poi.name}
-              </span>
-            </button>
-          ))}
+          {suggestionStatus === "empty" ? (
+            <div role="status" className="px-4 py-3 text-sm font-semibold text-neutral-500">
+              검색 결과가 없습니다
+            </div>
+          ) : (
+            suggestions.map((poi) => (
+              <button
+                key={`${poi.name}-${poi.point.lat}-${poi.point.lng}`}
+                type="button"
+                onClick={() => onSelect(poi)}
+                className="flex w-full items-center gap-3 border-b border-neutral-100 px-4 py-3 text-left last:border-b-0 hover:bg-blue-50"
+              >
+                <MapPin className="size-4 shrink-0 text-blue-600" aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate text-sm font-semibold text-neutral-900">
+                  {poi.name}
+                </span>
+              </button>
+            ))
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function usePoiSuggestions(query: string, selectedPoint?: GeoPoint): TmapPoi[] {
-  const [suggestions, setSuggestions] = useState<TmapPoi[]>([]);
+function usePoiSuggestions(query: string, selectedPoint?: GeoPoint): { items: TmapPoi[]; status: PoiSuggestionStatus } {
+  const [suggestions, setSuggestions] = useState<{ items: TmapPoi[]; status: PoiSuggestionStatus }>({
+    items: [],
+    status: "idle",
+  });
 
   useEffect(() => {
     const trimmedQuery = query.trim();
 
     if (trimmedQuery.length < 2 || selectedPoint) {
-      setSuggestions([]);
+      setSuggestions({ items: [], status: "idle" });
       return undefined;
     }
 
     let cancelled = false;
+    setSuggestions((current) => ({ ...current, status: "loading" }));
     const timer = window.setTimeout(() => {
       searchPois(trimmedQuery, 5)
         .then((pois) => {
           if (!cancelled) {
-            setSuggestions(pois);
+            setSuggestions({
+              items: pois,
+              status: pois.length > 0 ? "success" : "empty",
+            });
           }
         })
         .catch(() => {
           if (!cancelled) {
-            setSuggestions([]);
+            setSuggestions({ items: [], status: "idle" });
           }
         });
     }, 300);

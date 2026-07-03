@@ -6,7 +6,8 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite",
-    "test": "vitest run"
+    "e2e": "playwright test",
+    "test": "vitest run src"
   },
   "dependencies": {
     "canvas-confetti": "1.9.4",
@@ -19,6 +20,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.1.12",
+    "@playwright/test": "^1.49.0",
     "@vitejs/plugin-react": "4.7.0",
     "tailwindcss": "4.1.12",
     "vite-plugin-pwa": "^1.0.0",
