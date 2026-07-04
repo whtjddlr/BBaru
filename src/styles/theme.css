@@ -196,4 +196,17 @@
     font-weight: var(--font-weight-normal);
     line-height: 1.5;
   }
+
+  .time-wheel-scroll {
+    scroll-snap-type: y mandatory;
+    scrollbar-width: none;
+  }
+
+  .time-wheel-scroll::-webkit-scrollbar {
+    display: none;
+  }
+
+  .time-wheel-item {
+    scroll-snap-align: center;
+  }
 }

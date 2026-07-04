@@ -1,6 +1,19 @@
 <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="64" height="64" rx="16" fill="#2563EB"/>
-  <circle cx="32" cy="32" r="18" stroke="white" stroke-width="5"/>
-  <path d="M34 16L23 34H32L29 48L42 28H33L34 16Z" fill="white"/>
-  <path d="M32 22V33L40 37" stroke="#2563EB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect width="64" height="64" fill="#F8FBFF"/>
+  <circle cx="10" cy="12" r="9" fill="#DCEAFE"/>
+  <circle cx="54" cy="53" r="8" fill="#DBFBE8"/>
+  <path d="M13 48C22 39 32 51 48 44" stroke="#2563EB" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="13" cy="48" r="3" fill="#2563EB"/>
+  <circle cx="48" cy="44" r="4" fill="#10B981"/>
+  <circle cx="48" cy="44" r="1.5" fill="white"/>
+  <rect x="24" y="8" width="16" height="6" rx="3" fill="#2563EB"/>
+  <text
+    x="32"
+    y="37"
+    text-anchor="middle"
+    font-family="Apple SD Gothic Neo, AppleGothic, system-ui, sans-serif"
+    font-size="23"
+    font-weight="800"
+    fill="#10214A"
+  >빠루</text>
 </svg>
