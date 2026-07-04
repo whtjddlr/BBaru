@@ -26,6 +26,9 @@ export default function App() {
 function AppShell() {
   const { departureAlarm, markDepartureAlarmFired } = useRouteState();
   const [inAppAlarm, setInAppAlarm] = useState<DepartureAlarmFire | null>(null);
+  const safeAreaClass = isNativeRuntime()
+    ? "pb-4 pt-8"
+    : "pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)]";
 
   const checkDepartureAlarm = useCallback(() => {
     const fire = shouldFire(departureAlarm, new Date());
@@ -54,7 +57,7 @@ function AppShell() {
   }, [checkDepartureAlarm]);
 
   return (
-    <div className="size-full bg-[#F8F9FB]">
+    <div className={`size-full bg-[#F8F9FB] ${safeAreaClass}`}>
       <div className="mx-auto h-full max-w-[430px] bg-white relative overflow-hidden">
         <Routes>
           <Route path="/" element={<MainScreen />} />
@@ -82,6 +85,17 @@ function AppShell() {
         )}
       </div>
     </div>
+  );
+}
+
+function isNativeRuntime(): boolean {
+  const capacitor = (window as Window & {
+    Capacitor?: { isNativePlatform?: () => boolean };
+  }).Capacitor;
+
+  return (
+    window.location.protocol === "capacitor:" ||
+    Boolean(capacitor?.isNativePlatform?.())
   );
 }
 

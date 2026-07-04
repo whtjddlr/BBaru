@@ -1,4 +1,5 @@
 import type { GeoPoint } from "./eta";
+import { createApiUrl } from "./apiBase";
 
 const CROSSROADS_CACHE_KEY = "bbaru:crossroads:v1";
 const CROSSROADS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -360,7 +361,7 @@ function createSignalUrl(pathname: "crossroads" | "realtime", params: Record<str
     searchParams.set(key, value);
   });
 
-  return `/api/signal/${pathname}?${searchParams.toString()}`;
+  return createApiUrl(`/api/signal/${pathname}`, Object.fromEntries(searchParams));
 }
 
 async function fetchJson<T>(url: string): Promise<T> {

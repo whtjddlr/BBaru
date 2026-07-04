@@ -1,4 +1,5 @@
 import type { GeoPoint } from "./eta";
+import { createApiUrl } from "./apiBase";
 
 const DEFAULT_TIMEOUT_MS = 8000;
 const SDK_POLL_INTERVAL_MS = 100;
@@ -118,7 +119,7 @@ export async function fetchTransitRoutes(
   end: GeoPoint,
   count = 3,
 ): Promise<TmapTransitResponse> {
-  return fetchJson<TmapTransitResponse>("/api/tmap/transit", {
+  return fetchJson<TmapTransitResponse>(createApiUrl("/api/tmap/transit"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -131,12 +132,6 @@ export async function fetchTransitRoutes(
       count,
     }),
   });
-}
-
-function createApiUrl(pathname: string, params: Record<string, string>): string {
-  const searchParams = new URLSearchParams(params);
-
-  return `${pathname}?${searchParams.toString()}`;
 }
 
 export async function loadTmapSdk(): Promise<void> {
