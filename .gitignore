@@ -6,7 +6,3 @@ dev-dist/
 .vercel
 test-results/
 playwright-report/
-ios/ExportOptions-*.plist
-ios/build/
-ios/export/
-ios/upload/
