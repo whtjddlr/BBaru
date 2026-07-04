@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { Search, Clock, MapPin, Navigation2, Smartphone, X, Bell, Footprints } from "lucide-react";
 import { useRouteState } from "../../context/RouteContext";
@@ -15,12 +15,8 @@ import {
 
 type PoiSuggestionStatus = "idle" | "loading" | "success" | "empty";
 
-const TARGET_TIME_PRESETS = [
-  { label: "10분 후", minutes: 10 },
-  { label: "30분 후", minutes: 30 },
-  { label: "1시간 후", minutes: 60 },
-  { label: "2시간 후", minutes: 120 },
-];
+const WHEEL_ITEM_HEIGHT = 40;
+const WHEEL_VERTICAL_PADDING = 36;
 
 export function MainScreen() {
   const navigate = useNavigate();
@@ -47,6 +43,7 @@ export function MainScreen() {
   const installPrompt = useInstallPrompt();
   const hasActiveDepartureAlarm = isDepartureAlarmActive(departureAlarm);
   const targetTimeSummary = getTargetTimeSummary(targetTime, targetTimeNow);
+  const [targetHour, targetMinute] = splitTargetTime(targetTime);
   const walkHeightValue = Number(heightInput);
   const walkHeightCm = walkProfile?.heightCm;
   const hasWalkHeight = typeof walkHeightCm === "number";
@@ -93,6 +90,11 @@ export function MainScreen() {
 
     setWalkHeight(walkHeightValue);
     setIsEditingWalkHeight(false);
+  };
+
+  const handleTargetTimeChange = (nextTargetTime: string) => {
+    setTargetTime(nextTargetTime);
+    setTargetTimeNow(new Date());
   };
 
   return (
@@ -163,49 +165,50 @@ export function MainScreen() {
             }}
           />
 
-          <div>
-            <label className="flex items-center gap-3 rounded-xl border border-neutral-200 bg-white px-4 py-4 shadow-sm">
-              <Clock className="size-5 text-blue-600" aria-hidden="true" />
-              <span className="mr-2 text-sm text-neutral-600">목표 도착 시각</span>
-              <input
-                type="time"
-                value={targetTime}
-                onChange={(event) => {
-                  setTargetTime(event.target.value);
-                  setTargetTimeNow(new Date());
-                }}
-                className="flex-1 bg-transparent text-lg font-semibold tabular-nums text-neutral-900 outline-none"
-              />
-            </label>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {TARGET_TIME_PRESETS.map((preset) => (
-                <button
-                  key={preset.minutes}
-                  type="button"
-                  onClick={() => {
-                    setTargetTime(getTargetTimeAfterMinutes(preset.minutes));
-                    setTargetTimeNow(new Date());
+          <fieldset className="rounded-xl border border-neutral-200 bg-white px-4 py-4 shadow-sm">
+            <legend className="sr-only">목표 도착 시각</legend>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-3">
+                <Clock className="size-5 shrink-0 text-blue-600" aria-hidden="true" />
+                <span className="text-sm font-semibold text-neutral-600">목표 도착 시각</span>
+              </div>
+              <div
+                className="flex shrink-0 items-center gap-1"
+                aria-label={`목표 도착 시각 ${targetHour}시 ${targetMinute}분`}
+              >
+                <TimeWheel
+                  id="target-hour"
+                  label="목표 도착 시"
+                  min={0}
+                  max={23}
+                  value={Number(targetHour)}
+                  onChange={(value) => {
+                    handleTargetTimeChange(updateTargetTimePart(targetTime, "hour", formatTimePart(value)));
                   }}
-                  className="rounded-full border border-neutral-200 bg-white px-3 py-1.5 text-xs font-semibold text-neutral-700 shadow-sm"
-                >
-                  {preset.label}
-                </button>
-              ))}
+                />
+                <span className="pb-1 text-3xl font-bold tabular-nums text-neutral-900" aria-hidden="true">:</span>
+                <TimeWheel
+                  id="target-minute"
+                  label="목표 도착 분"
+                  min={0}
+                  max={59}
+                  value={Number(targetMinute)}
+                  onChange={(value) => {
+                    handleTargetTimeChange(updateTargetTimePart(targetTime, "minute", formatTimePart(value)));
+                  }}
+                />
+              </div>
             </div>
-            {targetTimeSummary && (
+            {targetTimeSummary?.kind === "past" && (
               <p
                 role="status"
                 aria-live="polite"
-                className={`mt-2 px-1 text-xs font-semibold ${
-                  targetTimeSummary.kind === "past" ? "text-amber-700" : "text-neutral-500"
-                }`}
+                className="mt-2 px-1 text-xs font-semibold text-amber-700"
               >
-                {targetTimeSummary.kind === "past"
-                  ? "지난 시각입니다 — 시간을 다시 선택해주세요"
-                  : `지금부터 약 ${targetTimeSummary.minutes}분 후`}
+                지난 시각입니다 — 시간을 다시 선택해주세요
               </p>
             )}
-          </div>
+          </fieldset>
 
           <button
             type="submit"
@@ -388,6 +391,139 @@ export function MainScreen() {
   );
 }
 
+function TimeWheel({
+  id,
+  label,
+  min,
+  max,
+  value,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  min: number;
+  max: number;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const scrollTimerRef = useRef<number | null>(null);
+  const userScrollRef = useRef(false);
+  const values = Array.from({ length: max - min + 1 }, (_, index) => min + index);
+
+  useLayoutEffect(() => {
+    if (userScrollRef.current) {
+      return undefined;
+    }
+
+    const scroller = scrollerRef.current;
+    const syncScrollPosition = () => {
+      if (scroller) {
+        scroller.scrollTop = (value - min) * WHEEL_ITEM_HEIGHT;
+      }
+    };
+
+    syncScrollPosition();
+    const frame = window.requestAnimationFrame(syncScrollPosition);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [min, value]);
+
+  useEffect(() => {
+    return () => {
+      if (scrollTimerRef.current !== null) {
+        window.clearTimeout(scrollTimerRef.current);
+      }
+    };
+  }, []);
+
+  const snapToValue = (nextValue: number, behavior: ScrollBehavior = "smooth") => {
+    const scroller = scrollerRef.current;
+    scroller?.scrollTo({ top: (nextValue - min) * WHEEL_ITEM_HEIGHT, behavior });
+  };
+
+  const handleScroll = () => {
+    const scroller = scrollerRef.current;
+
+    if (!scroller) {
+      return;
+    }
+
+    userScrollRef.current = true;
+    const nextValue = clamp(min + Math.round(scroller.scrollTop / WHEEL_ITEM_HEIGHT), min, max);
+
+    if (nextValue !== value) {
+      onChange(nextValue);
+    }
+
+    if (scrollTimerRef.current !== null) {
+      window.clearTimeout(scrollTimerRef.current);
+    }
+
+    scrollTimerRef.current = window.setTimeout(() => {
+      userScrollRef.current = false;
+      const settledValue = clamp(min + Math.round(scroller.scrollTop / WHEEL_ITEM_HEIGHT), min, max);
+      snapToValue(settledValue);
+    }, 120);
+  };
+
+  return (
+    <div className="min-w-0">
+      <div id={`${id}-label`} className="sr-only">{label}</div>
+      <div className="relative h-28 w-16 overflow-hidden rounded-xl">
+        <div className="pointer-events-none absolute left-0 right-0 top-1/2 z-10 h-10 -translate-y-1/2 rounded-lg bg-blue-50/80" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-8 bg-gradient-to-b from-white to-white/0" />
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-8 bg-gradient-to-t from-white to-white/0" />
+        <div
+          ref={scrollerRef}
+          id={id}
+          role="listbox"
+          aria-labelledby={`${id}-label`}
+          aria-activedescendant={`${id}-${value}`}
+          tabIndex={0}
+          onScroll={handleScroll}
+          className="time-wheel-scroll relative z-10 h-full overflow-y-auto overscroll-contain px-2"
+          style={{
+            paddingBottom: WHEEL_VERTICAL_PADDING,
+            paddingTop: WHEEL_VERTICAL_PADDING,
+          }}
+        >
+          {values.map((option) => {
+            const distance = Math.abs(option - value);
+            const selected = option === value;
+            const textClassName = selected
+              ? "scale-110 text-3xl font-bold text-neutral-900"
+              : distance === 1
+                ? "text-lg font-bold text-neutral-400"
+                : "text-base font-semibold text-neutral-200";
+
+            return (
+              <button
+                key={option}
+                id={`${id}-${option}`}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                onClick={() => {
+                  userScrollRef.current = false;
+                  onChange(option);
+                  snapToValue(option);
+                }}
+                className={`time-wheel-item flex w-full items-center justify-center rounded-lg tabular-nums transition-transform ${textClassName}`}
+                style={{ height: WHEEL_ITEM_HEIGHT }}
+              >
+                {formatTimePart(option)}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PoiField({
   id,
   label,
@@ -541,6 +677,32 @@ function getTargetTimeSummary(
 
 function formatTimeValue(target: Date): string {
   return `${String(target.getHours()).padStart(2, "0")}:${String(target.getMinutes()).padStart(2, "0")}`;
+}
+
+function splitTargetTime(targetTime: string): [string, string] {
+  const [hour = "00", minute = "00"] = targetTime.split(":");
+
+  return [formatTimePart(hour), formatTimePart(minute)];
+}
+
+function updateTargetTimePart(targetTime: string, part: "hour" | "minute", value: string): string {
+  const [hour, minute] = splitTargetTime(targetTime);
+
+  return part === "hour" ? `${value}:${minute}` : `${hour}:${value}`;
+}
+
+function formatTimePart(value: number | string): string {
+  const numericValue = Number(value);
+
+  if (!Number.isFinite(numericValue)) {
+    return "00";
+  }
+
+  return String(numericValue).padStart(2, "0");
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
 
 function formatHeightInput(heightCm: number | undefined): string {
