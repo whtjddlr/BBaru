@@ -13,6 +13,10 @@ export const WALK_PROFILE_ALPHA = 0.3;
 export const DEFAULT_TMAP_WALK_SPEED_MPS = 1.38;
 export const MIN_VALID_WALK_SPEED_MPS = 0.3;
 export const MAX_VALID_WALK_SPEED_MPS = 3.0;
+export const MIN_HEIGHT_CM = 100;
+export const MAX_HEIGHT_CM = 220;
+export const STRIDE_HEIGHT_RATIO = 0.415;
+export const WALK_CADENCE_STEPS_PER_SEC = 1.9;
 export const MIN_SAMPLE_DISTANCE_METERS = 5;
 export const MAX_SAMPLE_ACCURACY_METERS = 50;
 export const MIN_WALK_DURATION_SCALE = 0.7;
@@ -22,12 +26,14 @@ export interface WalkProfile {
   speedMps: number;
   sampleCount: number;
   updatedAt: string;
+  heightCm?: number;
 }
 
 export interface WalkProfileApplied {
   speedMps: number;
   sampleCount: number;
   scale: number;
+  source: "measured" | "height";
 }
 
 export interface WalkPaceProjection extends Pick<RouteProjection, "traveledDistanceMeters"> {
@@ -94,6 +100,7 @@ export function updateWalkProfile(
     speedMps,
     sampleCount: (profile?.sampleCount ?? 0) + 1,
     updatedAt: now.toISOString(),
+    ...(typeof profile?.heightCm === "number" ? { heightCm: profile.heightCm } : {}),
   };
 }
 
@@ -106,20 +113,86 @@ export function isWalkProfileMature(profile: WalkProfile | null): profile is Wal
   );
 }
 
-export function getWalkDurationScale(profile: WalkProfile): number {
+export function estimateWalkSpeedFromHeightCm(heightCm: number): number {
+  const estimatedSpeedMps = (heightCm / 100) * STRIDE_HEIGHT_RATIO * WALK_CADENCE_STEPS_PER_SEC;
+
   return clamp(
-    DEFAULT_TMAP_WALK_SPEED_MPS / profile.speedMps,
+    Number.isFinite(estimatedSpeedMps) ? estimatedSpeedMps : MIN_VALID_WALK_SPEED_MPS,
+    MIN_VALID_WALK_SPEED_MPS,
+    MAX_VALID_WALK_SPEED_MPS,
+  );
+}
+
+export function setWalkProfileHeight(
+  profile: WalkProfile | null,
+  heightCm: number,
+  now = new Date(),
+): WalkProfile {
+  const clampedHeightCm = clamp(
+    Number.isFinite(heightCm) ? heightCm : MIN_HEIGHT_CM,
+    MIN_HEIGHT_CM,
+    MAX_HEIGHT_CM,
+  );
+
+  if (profile) {
+    return {
+      ...profile,
+      heightCm: clampedHeightCm,
+    };
+  }
+
+  return {
+    speedMps: estimateWalkSpeedFromHeightCm(clampedHeightCm),
+    sampleCount: 0,
+    heightCm: clampedHeightCm,
+    updatedAt: now.toISOString(),
+  };
+}
+
+export function getEffectiveWalkSpeed(
+  profile: WalkProfile | null,
+): { speedMps: number; source: "measured" | "height" } | null {
+  if (isWalkProfileMature(profile)) {
+    return {
+      speedMps: profile.speedMps,
+      source: "measured",
+    };
+  }
+
+  if (
+    profile &&
+    Number.isFinite(profile.speedMps) &&
+    profile.speedMps > 0 &&
+    typeof profile.heightCm === "number" &&
+    Number.isFinite(profile.heightCm) &&
+    profile.heightCm >= MIN_HEIGHT_CM &&
+    profile.heightCm <= MAX_HEIGHT_CM
+  ) {
+    return {
+      speedMps: profile.speedMps,
+      source: "height",
+    };
+  }
+
+  return null;
+}
+
+export function getWalkDurationScale(speedMps: number): number {
+  return clamp(
+    DEFAULT_TMAP_WALK_SPEED_MPS / speedMps,
     MIN_WALK_DURATION_SCALE,
     MAX_WALK_DURATION_SCALE,
   );
 }
 
 export function applyWalkProfile(plan: EtaPlan, profile: WalkProfile | null, now = new Date()): EtaPlan {
-  if (!isWalkProfileMature(profile)) {
+  const effectiveWalkSpeed = getEffectiveWalkSpeed(profile);
+
+  if (!profile || !effectiveWalkSpeed) {
     return plan;
   }
 
-  const scale = getWalkDurationScale(profile);
+  const scale = getWalkDurationScale(effectiveWalkSpeed.speedMps);
   const scaledSegments = plan.segments.map((segment) => scaleWalkingSegmentDuration(segment, scale));
   const scaledPlan = createEtaPlanFromSegments({
     request: plan.request,
@@ -135,9 +208,10 @@ export function applyWalkProfile(plan: EtaPlan, profile: WalkProfile | null, now
   return {
     ...scaledPlan,
     walkProfileApplied: {
-      speedMps: profile.speedMps,
+      speedMps: effectiveWalkSpeed.speedMps,
       sampleCount: profile.sampleCount,
       scale,
+      source: effectiveWalkSpeed.source,
     },
   };
 }
@@ -213,6 +287,11 @@ function parseStoredWalkProfile(value: unknown): WalkProfile | null {
   const sampleCount = Number(record.sampleCount);
   const updatedAt = typeof record.updatedAt === "string" ? record.updatedAt : "";
   const updatedAtDate = new Date(updatedAt);
+  const heightCm = Number(record.heightCm);
+  const parsedHeightCm =
+    Number.isFinite(heightCm) && heightCm >= MIN_HEIGHT_CM && heightCm <= MAX_HEIGHT_CM
+      ? heightCm
+      : undefined;
 
   if (!Number.isFinite(speedMps) || speedMps <= 0 || !Number.isInteger(sampleCount) || sampleCount < 0) {
     return null;
@@ -222,6 +301,7 @@ function parseStoredWalkProfile(value: unknown): WalkProfile | null {
     speedMps,
     sampleCount,
     updatedAt: Number.isFinite(updatedAtDate.getTime()) ? updatedAtDate.toISOString() : new Date(0).toISOString(),
+    ...(typeof parsedHeightCm === "number" ? { heightCm: parsedHeightCm } : {}),
   };
 }
 

@@ -3,9 +3,11 @@ import { createEtaPlanFromSegments, type RouteSegment } from "./eta.ts";
 import {
   applyWalkProfile,
   collectPaceSample,
+  estimateWalkSpeedFromHeightCm,
   getWalkDurationScale,
   isWalkProfileMature,
   readWalkProfile,
+  setWalkProfileHeight,
   updateWalkProfile,
   WALK_PROFILE_STORAGE_KEY,
   writeWalkProfile,
@@ -46,6 +48,52 @@ describe("walk profile updates and storage", () => {
     expect(second.sampleCount).toBe(2);
   });
 
+  it("preserves stored height while updating measured speed", () => {
+    const profile = {
+      speedMps: 1.34,
+      sampleCount: 0,
+      heightCm: 170,
+      updatedAt: "2026-01-01T09:00:00.000Z",
+    };
+    const nextProfile = updateWalkProfile(profile, 2.0, new Date("2026-01-01T09:00:10Z"));
+
+    expect(nextProfile.heightCm).toBe(170);
+    expect(nextProfile.speedMps).toBeCloseTo(1.538, 5);
+    expect(nextProfile.sampleCount).toBe(1);
+  });
+
+  it("estimates and clamps walking speed from height", () => {
+    expect(estimateWalkSpeedFromHeightCm(170)).toBeCloseTo(1.34045, 5);
+    expect(estimateWalkSpeedFromHeightCm(0)).toBe(0.3);
+    expect(estimateWalkSpeedFromHeightCm(10000)).toBe(3.0);
+  });
+
+  it("sets height by seeding or preserving an existing profile", () => {
+    const seededProfile = setWalkProfileHeight(null, 170, new Date("2026-01-01T09:00:00Z"));
+
+    expect(seededProfile).toEqual({
+      speedMps: estimateWalkSpeedFromHeightCm(170),
+      sampleCount: 0,
+      heightCm: 170,
+      updatedAt: "2026-01-01T09:00:00.000Z",
+    });
+
+    const existingProfile: WalkProfile = {
+      speedMps: 1.8,
+      sampleCount: 7,
+      heightCm: 160,
+      updatedAt: "2026-01-01T08:00:00.000Z",
+    };
+    const updatedProfile = setWalkProfileHeight(existingProfile, 250, new Date("2026-01-01T09:00:00Z"));
+
+    expect(updatedProfile).toEqual({
+      speedMps: 1.8,
+      sampleCount: 7,
+      heightCm: 220,
+      updatedAt: "2026-01-01T08:00:00.000Z",
+    });
+  });
+
   it("round-trips through storage", () => {
     const storage = new MemoryStorage();
     const profile: WalkProfile = {
@@ -58,6 +106,37 @@ describe("walk profile updates and storage", () => {
 
     expect(storage.getItem(WALK_PROFILE_STORAGE_KEY)).toBeTruthy();
     expect(readWalkProfile(storage)).toEqual(profile);
+  });
+
+  it("parses optional height only when it is compatible", () => {
+    const storage = new MemoryStorage();
+
+    storage.setItem(
+      WALK_PROFILE_STORAGE_KEY,
+      JSON.stringify({
+        speedMps: 1.4,
+        sampleCount: 2,
+        heightCm: 170,
+        updatedAt: "2026-01-01T09:00:00.000Z",
+      }),
+    );
+    expect(readWalkProfile(storage)).toEqual({
+      speedMps: 1.4,
+      sampleCount: 2,
+      heightCm: 170,
+      updatedAt: "2026-01-01T09:00:00.000Z",
+    });
+
+    storage.setItem(
+      WALK_PROFILE_STORAGE_KEY,
+      JSON.stringify({
+        speedMps: 1.4,
+        sampleCount: 2,
+        heightCm: 99,
+        updatedAt: "2026-01-01T09:00:00.000Z",
+      }),
+    );
+    expect(readWalkProfile(storage)?.heightCm).toBeUndefined();
   });
 
   it("treats profiles below 10 samples as learning", () => {
@@ -102,10 +181,22 @@ describe("walk profile plan adjustment", () => {
   });
 
   it("clamps duration scale from profile speed", () => {
-    expect(getWalkDurationScale({ speedMps: 10, sampleCount: 10, updatedAt: "2026-01-01T09:00:00.000Z" }))
-      .toBe(0.7);
-    expect(getWalkDurationScale({ speedMps: 0.5, sampleCount: 10, updatedAt: "2026-01-01T09:00:00.000Z" }))
-      .toBe(1.5);
+    expect(getWalkDurationScale(10)).toBe(0.7);
+    expect(getWalkDurationScale(0.5)).toBe(1.5);
+  });
+
+  it("adjusts plans using height-seeded speed before the profile matures", () => {
+    const profile = setWalkProfileHeight(null, 170, new Date("2026-01-01T09:00:00Z"));
+    const adjusted = applyWalkProfile(plan, profile, now);
+
+    expect(adjusted).not.toBe(plan);
+    expect(adjusted.segments.map((segment) => segment.duration)).toEqual([103, 30, 200, 51]);
+    expect(adjusted.walkProfileApplied).toEqual({
+      speedMps: estimateWalkSpeedFromHeightCm(170),
+      sampleCount: 0,
+      scale: getWalkDurationScale(estimateWalkSpeedFromHeightCm(170)),
+      source: "height",
+    });
   });
 
   it("scales only walking durations and recalculates totals", () => {
@@ -121,6 +212,7 @@ describe("walk profile plan adjustment", () => {
       speedMps: 2.76,
       sampleCount: 10,
       scale: 0.7,
+      source: "measured",
     });
   });
 

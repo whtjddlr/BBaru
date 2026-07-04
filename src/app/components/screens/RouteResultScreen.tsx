@@ -111,12 +111,6 @@ export function RouteResultScreen() {
 
   const isLoading = routePlanState.status === "loading";
   const isFallback = routePlanState.status === "success" && routePlanState.isFallback;
-  const loadError =
-    routePlanState.status === "error"
-      ? routePlanState.error
-      : routePlanState.status === "success"
-        ? routePlanState.error
-        : undefined;
   const summaryBadge =
     plan.status.kind === "target_passed"
       ? { variant: "late" as const, label: "목표 시각 지남" }
@@ -127,6 +121,9 @@ export function RouteResultScreen() {
     destination: plan.request.destination,
     targetTime: formatClock(plan.targetArrival),
   };
+  const walkProfileAppliedLabel = plan.walkProfileApplied
+    ? `${plan.walkProfileApplied.source === "height" ? "키 기준 보행 속도 반영" : "내 보행 속도 반영"} (${formatWalkSpeedKmh(plan.walkProfileApplied.speedMps)} km/h)`
+    : null;
   const isDepartureAlarmSet = isMatchingDepartureAlarm(
     departureAlarm,
     alarmRouteSummary,
@@ -199,12 +196,12 @@ export function RouteResultScreen() {
               <div className="flex items-center gap-2">
                 {isLoading && (
                   <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-sm font-semibold text-blue-700">
-                    실경로 조회 중
+                    경로 조회 중
                   </span>
                 )}
                 {isFallback && (
                   <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-sm font-semibold text-amber-700">
-                    데모 데이터
+                    예상 경로
                   </span>
                 )}
                 <StatusBadge variant={summaryBadge.variant}>{summaryBadge.label}</StatusBadge>
@@ -220,9 +217,9 @@ export function RouteResultScreen() {
               />
               <TimeDisplay label="총 소요" time={formatDurationCompact(plan.totalDuration)} />
             </div>
-            {plan.walkProfileApplied && (
+            {walkProfileAppliedLabel && (
               <div className="-mt-1 mb-4 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700">
-                내 보행 속도 반영 ({formatWalkSpeedKmh(plan.walkProfileApplied.speedMps)} km/h)
+                {walkProfileAppliedLabel}
               </div>
             )}
 
@@ -245,8 +242,8 @@ export function RouteResultScreen() {
               <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2">
                 <span className="text-xs text-neutral-600">
                   {isLoading
-                    ? "Tmap 대중교통 경로를 조회하고 있습니다."
-                    : `실경로 조회 실패: ${loadError ?? "데모 경로로 표시 중입니다."}`}
+                    ? "실시간 경로를 조회하고 있습니다."
+                    : "실시간 경로를 불러오지 못해 예상 경로를 표시합니다."}
                 </span>
                 {!isLoading && (
                   <button

@@ -8,14 +8,14 @@ test("keyless environment falls back to demo route", async ({ page }) => {
   await page.getByRole("button", { name: "경로 검색" }).click();
 
   await expect(page).toHaveURL(/\/route$/);
-  // 키 없는 CI에서는 데모 폴백 배지, 키+쿼터가 살아있는 로컬에서는 실데이터 요약이 뜬다
-  await expect(page.getByText("데모 데이터").or(page.getByText("총 소요")).first()).toBeVisible();
+  // 키 없는 CI에서는 예상 경로 배지, 키+쿼터가 살아있는 로컬에서는 실데이터 요약이 뜬다
+  await expect(page.getByText("예상 경로").or(page.getByText("총 소요")).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "안내 시작" })).toBeVisible();
 
   await page.getByRole("button", { name: "안내 시작" }).click();
 
   await expect(page).toHaveURL(/\/en-route$/);
-  await expect(page.getByText(/실시간 추적|데모 시뮬레이션/).first()).toBeVisible();
+  await expect(page.getByText(/실시간 추적|데모 시뮬레이션|예상 안내|경로 안내/).first()).toBeVisible();
 });
 
 test("live geolocation projection updates route progress", async ({ browserName, context, page }) => {
@@ -33,11 +33,11 @@ test("live geolocation projection updates route progress", async ({ browserName,
   await expect(page).toHaveURL(/\/route$/);
   await expect(page.getByRole("button", { name: "안내 시작" })).toBeVisible({ timeout: 20000 });
 
-  // Tmap 업스트림 장애(쿼터 초과 등)로 목업 폴백이 뜨면 실경로 투영을 검증할 수 없다
+  // Tmap 업스트림 장애(쿼터 초과 등)로 목업 폴백이 뜨면 실제 경로 투영을 검증할 수 없다
   await page.waitForTimeout(1000);
   test.skip(
-    (await page.getByText("데모 데이터").count()) > 0,
-    "Tmap upstream unavailable — fell back to demo data, live projection untestable.",
+    (await page.getByText("예상 경로").count()) > 0,
+    "Tmap upstream unavailable — fell back to expected route, live projection untestable.",
   );
 
   await page.getByRole("button", { name: "안내 시작" }).click();

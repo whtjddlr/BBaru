@@ -25,6 +25,7 @@ import {
   applyWalkProfile,
   clearWalkProfile,
   readWalkProfile,
+  setWalkProfileHeight,
   updateWalkProfile,
   WalkProfile,
   writeWalkProfile,
@@ -71,6 +72,7 @@ interface RouteContextValue {
   retrySearch: () => void;
   rerouteFromPosition: (position: GeoPoint) => Promise<EtaPlan>;
   recordWalkPaceSample: (speedMps: number) => void;
+  setWalkHeight: (heightCm: number) => void;
   resetWalkProfile: () => void;
   clearSearch: () => void;
   scheduleDepartureAlarm: (plan: EtaPlan) => DepartureAlarm;
@@ -259,10 +261,32 @@ export function RouteProvider({ children }: { children: ReactNode }) {
           return nextProfile;
         });
       },
+      setWalkHeight: (heightCm) => {
+        setWalkProfile((currentProfile) => {
+          const nextProfile = setWalkProfileHeight(currentProfile, heightCm, new Date());
+
+          writeWalkProfile(nextProfile);
+          walkProfileRef.current = nextProfile;
+
+          return nextProfile;
+        });
+      },
       resetWalkProfile: () => {
-        clearWalkProfile();
-        walkProfileRef.current = null;
-        setWalkProfile(null);
+        setWalkProfile((currentProfile) => {
+          if (typeof currentProfile?.heightCm === "number") {
+            const nextProfile = setWalkProfileHeight(null, currentProfile.heightCm, new Date());
+
+            writeWalkProfile(nextProfile);
+            walkProfileRef.current = nextProfile;
+
+            return nextProfile;
+          }
+
+          clearWalkProfile();
+          walkProfileRef.current = null;
+
+          return null;
+        });
       },
       clearSearch: () => {
         routeRequestIdRef.current += 1;
@@ -443,7 +467,7 @@ function isEtaMode(value: unknown): value is EtaMode {
 
 function getErrorMessage(error: unknown): string {
   if (isOffline()) {
-    return "오프라인 상태입니다. 저장된 앱 셸과 데모 경로로 계속 이용할 수 있습니다.";
+    return "오프라인 상태입니다. 인터넷 연결 후 다시 시도해주세요.";
   }
 
   return error instanceof Error ? error.message : "경로 조회 중 알 수 없는 오류가 발생했습니다.";

@@ -1,14 +1,26 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { Search, Clock, MapPin, TrendingUp, Navigation2, Smartphone, X, Bell, Footprints } from "lucide-react";
+import { Search, Clock, MapPin, Navigation2, Smartphone, X, Bell, Footprints } from "lucide-react";
 import { useRouteState } from "../../context/RouteContext";
 import { formatClock, formatDurationCompact, GeoPoint } from "../../lib/eta";
 import { searchPois, TmapPoi } from "../../lib/tmap";
 import { useInstallPrompt } from "../../lib/useInstallPrompt";
 import { isDepartureAlarmActive } from "../../lib/departureAlarm";
-import { formatWalkSpeedKmh, isWalkProfileMature, WALK_PROFILE_MIN_SAMPLES } from "../../lib/walkProfile";
+import {
+  formatWalkSpeedKmh,
+  isWalkProfileMature,
+  MAX_HEIGHT_CM,
+  MIN_HEIGHT_CM,
+} from "../../lib/walkProfile";
 
 type PoiSuggestionStatus = "idle" | "loading" | "success" | "empty";
+
+const TARGET_TIME_PRESETS = [
+  { label: "10분 후", minutes: 10 },
+  { label: "30분 후", minutes: 30 },
+  { label: "1시간 후", minutes: 60 },
+  { label: "2시간 후", minutes: 120 },
+];
 
 export function MainScreen() {
   const navigate = useNavigate();
@@ -19,6 +31,7 @@ export function MainScreen() {
     departureAlarm,
     cancelDepartureAlarm,
     walkProfile,
+    setWalkHeight,
     resetWalkProfile,
   } = useRouteState();
   const [origin, setOrigin] = useState(searchRequest?.origin ?? "");
@@ -26,14 +39,41 @@ export function MainScreen() {
   const [originPoint, setOriginPoint] = useState<GeoPoint | undefined>(searchRequest?.originPoint);
   const [destinationPoint, setDestinationPoint] = useState<GeoPoint | undefined>(searchRequest?.destinationPoint);
   const [targetTime, setTargetTime] = useState(searchRequest?.targetTime ?? getDefaultTargetTime());
+  const [targetTimeNow, setTargetTimeNow] = useState(() => new Date());
+  const [isEditingWalkHeight, setIsEditingWalkHeight] = useState(false);
+  const [heightInput, setHeightInput] = useState(() => formatHeightInput(walkProfile?.heightCm));
   const originSuggestions = usePoiSuggestions(origin, originPoint);
   const destinationSuggestions = usePoiSuggestions(destination, destinationPoint);
   const installPrompt = useInstallPrompt();
   const hasActiveDepartureAlarm = isDepartureAlarmActive(departureAlarm);
+  const targetTimeSummary = getTargetTimeSummary(targetTime, targetTimeNow);
+  const walkHeightValue = Number(heightInput);
+  const walkHeightCm = walkProfile?.heightCm;
+  const hasWalkHeight = typeof walkHeightCm === "number";
+  const walkHeightLabel = hasWalkHeight ? formatHeightCm(walkHeightCm) : "";
+  const shouldShowHeightInput = !hasWalkHeight || isEditingWalkHeight;
+  const canSaveWalkHeight =
+    Number.isFinite(walkHeightValue) && walkHeightValue >= MIN_HEIGHT_CM && walkHeightValue <= MAX_HEIGHT_CM;
   const sameRoute = origin.trim().length > 0 &&
     destination.trim().length > 0 &&
     origin.trim().toLowerCase() === destination.trim().toLowerCase();
   const canSearch = origin.trim().length > 0 && destination.trim().length > 0 && !sameRoute;
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setTargetTimeNow(new Date());
+    }, 30000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isEditingWalkHeight) {
+      setHeightInput(formatHeightInput(walkProfile?.heightCm));
+    }
+  }, [isEditingWalkHeight, walkProfile?.heightCm]);
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -44,6 +84,15 @@ export function MainScreen() {
 
     startSearch({ origin, destination, targetTime, originPoint, destinationPoint });
     navigate("/route");
+  };
+
+  const handleWalkHeightSave = () => {
+    if (!canSaveWalkHeight) {
+      return;
+    }
+
+    setWalkHeight(walkHeightValue);
+    setIsEditingWalkHeight(false);
   };
 
   return (
@@ -81,7 +130,6 @@ export function MainScreen() {
             label="출발지"
             placeholder="출발지를 입력하세요"
             value={origin}
-            point={originPoint}
             suggestions={originSuggestions.items}
             suggestionStatus={originSuggestions.status}
             markerClassName="bg-blue-600"
@@ -101,7 +149,6 @@ export function MainScreen() {
             label="도착지"
             placeholder="도착지를 입력하세요"
             value={destination}
-            point={destinationPoint}
             suggestions={destinationSuggestions.items}
             suggestionStatus={destinationSuggestions.status}
             markerClassName="bg-red-600"
@@ -116,16 +163,49 @@ export function MainScreen() {
             }}
           />
 
-          <label className="flex items-center gap-3 rounded-xl border border-neutral-200 bg-white px-4 py-4 shadow-sm">
-            <Clock className="size-5 text-blue-600" aria-hidden="true" />
-            <span className="mr-2 text-sm text-neutral-600">목표 도착 시각</span>
-            <input
-              type="time"
-              value={targetTime}
-              onChange={(event) => setTargetTime(event.target.value)}
-              className="flex-1 bg-transparent text-lg font-semibold tabular-nums text-neutral-900 outline-none"
-            />
-          </label>
+          <div>
+            <label className="flex items-center gap-3 rounded-xl border border-neutral-200 bg-white px-4 py-4 shadow-sm">
+              <Clock className="size-5 text-blue-600" aria-hidden="true" />
+              <span className="mr-2 text-sm text-neutral-600">목표 도착 시각</span>
+              <input
+                type="time"
+                value={targetTime}
+                onChange={(event) => {
+                  setTargetTime(event.target.value);
+                  setTargetTimeNow(new Date());
+                }}
+                className="flex-1 bg-transparent text-lg font-semibold tabular-nums text-neutral-900 outline-none"
+              />
+            </label>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {TARGET_TIME_PRESETS.map((preset) => (
+                <button
+                  key={preset.minutes}
+                  type="button"
+                  onClick={() => {
+                    setTargetTime(getTargetTimeAfterMinutes(preset.minutes));
+                    setTargetTimeNow(new Date());
+                  }}
+                  className="rounded-full border border-neutral-200 bg-white px-3 py-1.5 text-xs font-semibold text-neutral-700 shadow-sm"
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+            {targetTimeSummary && (
+              <p
+                role="status"
+                aria-live="polite"
+                className={`mt-2 px-1 text-xs font-semibold ${
+                  targetTimeSummary.kind === "past" ? "text-amber-700" : "text-neutral-500"
+                }`}
+              >
+                {targetTimeSummary.kind === "past"
+                  ? "지난 시각입니다 — 시간을 다시 선택해주세요"
+                  : `지금부터 약 ${targetTimeSummary.minutes}분 후`}
+              </p>
+            )}
+          </div>
 
           <button
             type="submit"
@@ -192,34 +272,6 @@ export function MainScreen() {
           </div>
         </div>
 
-        <section aria-labelledby="tips-title" className="mt-6">
-          <h2 id="tips-title" className="mb-3 text-base font-semibold text-neutral-900">BBARU 활용 팁</h2>
-          <div className="flex flex-col gap-2">
-            <div className="rounded-xl border border-blue-100 bg-blue-50 p-3">
-              <div className="flex items-start gap-3">
-                <TrendingUp className="mt-0.5 size-4 text-blue-600" aria-hidden="true" />
-                <div>
-                  <div className="mb-1 text-sm font-semibold text-blue-900">실시간 신호 반영</div>
-                  <div className="text-xs text-blue-700">
-                    횡단보도와 지하철 도착 정보를 실시간으로 반영합니다
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
-              <div className="flex items-start gap-3">
-                <Clock className="mt-0.5 size-4 text-emerald-600" aria-hidden="true" />
-                <div>
-                  <div className="mb-1 text-sm font-semibold text-emerald-900">정시 도착 최적화</div>
-                  <div className="text-xs text-emerald-700">
-                    너무 빠르지도, 늦지도 않게 목표 시각에 정확히 도착합니다
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
         <section aria-label="보행속도 프로필" className="mt-6">
           <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
             <div className="flex items-start gap-3">
@@ -230,11 +282,15 @@ export function MainScreen() {
                 <div className="mb-1 text-sm font-semibold text-neutral-900">내 보행 속도</div>
                 {isWalkProfileMature(walkProfile) ? (
                   <div className="text-xs text-neutral-500">
-                    내 평균 보행 속도 {formatWalkSpeedKmh(walkProfile.speedMps)} km/h
+                    평균 {formatWalkSpeedKmh(walkProfile.speedMps)} km/h · 실제 걸음 기준
+                  </div>
+                ) : walkProfile && hasWalkHeight ? (
+                  <div className="text-xs text-neutral-500">
+                    약 {formatWalkSpeedKmh(walkProfile.speedMps)} km/h · 키 {walkHeightLabel}cm 기준
                   </div>
                 ) : (
                   <div className="text-xs text-neutral-500">
-                    도보 이동 {walkProfile?.sampleCount ?? 0}회 기록 중 — {WALK_PROFILE_MIN_SAMPLES}회부터 맞춤 보정
+                    키를 입력하면 내 걸음에 맞춰 도착 시간을 계산해요
                   </div>
                 )}
               </div>
@@ -246,6 +302,50 @@ export function MainScreen() {
                 >
                   초기화
                 </button>
+              )}
+            </div>
+            <div className="mt-4 border-t border-neutral-100 pt-3">
+              {shouldShowHeightInput ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    min={MIN_HEIGHT_CM}
+                    max={MAX_HEIGHT_CM}
+                    placeholder="키 (cm)"
+                    value={heightInput}
+                    onChange={(event) => setHeightInput(event.target.value)}
+                    className="min-w-0 flex-1 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm font-semibold text-neutral-900 outline-none focus:border-blue-300"
+                  />
+                  <button
+                    type="button"
+                    disabled={!canSaveWalkHeight}
+                    onClick={handleWalkHeightSave}
+                    className={`shrink-0 rounded-lg px-3 py-2 text-xs font-semibold ${
+                      canSaveWalkHeight
+                        ? "bg-blue-600 text-white"
+                        : "cursor-not-allowed bg-neutral-200 text-neutral-400"
+                    }`}
+                  >
+                    저장
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between gap-3 rounded-xl bg-neutral-50 px-3 py-2">
+                  <span className="text-sm font-semibold text-neutral-700">
+                    키 {walkHeightLabel}cm
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeightInput(walkHeightLabel);
+                      setIsEditingWalkHeight(true);
+                    }}
+                    className="shrink-0 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs font-semibold text-neutral-600"
+                  >
+                    수정
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -293,7 +393,6 @@ function PoiField({
   label,
   placeholder,
   value,
-  point,
   suggestions,
   suggestionStatus,
   markerClassName,
@@ -305,7 +404,6 @@ function PoiField({
   label: string;
   placeholder: string;
   value: string;
-  point?: GeoPoint;
   suggestions: TmapPoi[];
   suggestionStatus: PoiSuggestionStatus;
   markerClassName: string;
@@ -332,10 +430,6 @@ function PoiField({
         />
         {icon}
       </label>
-
-      {point && (
-        <div className="mt-1 px-4 text-xs text-blue-600">좌표 확정됨</div>
-      )}
 
       {(suggestions.length > 0 || suggestionStatus === "empty") && (
         <div className="absolute left-0 right-0 top-full z-40 mt-2 overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-xl">
@@ -407,12 +501,52 @@ function usePoiSuggestions(query: string, selectedPoint?: GeoPoint): { items: Tm
 }
 
 function getDefaultTargetTime(): string {
-  const now = new Date();
-  const target = new Date(now.getTime() + 45 * 60 * 1000);
+  return getTargetTimeAfterMinutes(45);
+}
+
+function getTargetTimeAfterMinutes(minutes: number, now = new Date()): string {
+  const target = new Date(now.getTime() + minutes * 60 * 1000);
 
   if (target.getDate() !== now.getDate()) {
     return "23:59";
   }
 
+  return formatTimeValue(target);
+}
+
+function getTargetTimeSummary(
+  targetTime: string,
+  now = new Date(),
+): { kind: "future"; minutes: number } | { kind: "past" } | null {
+  const [hourValue, minuteValue] = targetTime.split(":");
+  const hour = Number(hourValue);
+  const minute = Number(minuteValue);
+
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) {
+    return null;
+  }
+
+  const target = new Date(now);
+  target.setHours(hour, minute, 0, 0);
+
+  if (target.getTime() < now.getTime()) {
+    return { kind: "past" };
+  }
+
+  return {
+    kind: "future",
+    minutes: Math.ceil((target.getTime() - now.getTime()) / 60000),
+  };
+}
+
+function formatTimeValue(target: Date): string {
   return `${String(target.getHours()).padStart(2, "0")}:${String(target.getMinutes()).padStart(2, "0")}`;
+}
+
+function formatHeightInput(heightCm: number | undefined): string {
+  return typeof heightCm === "number" ? String(heightCm) : "";
+}
+
+function formatHeightCm(heightCm: number): string {
+  return Number.isInteger(heightCm) ? String(heightCm) : heightCm.toFixed(1);
 }

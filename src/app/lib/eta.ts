@@ -75,6 +75,7 @@ export interface EtaPlan {
     speedMps: number;
     sampleCount: number;
     scale: number;
+    source: "measured" | "height";
   };
 }
 

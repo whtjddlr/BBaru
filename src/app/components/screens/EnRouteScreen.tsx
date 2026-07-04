@@ -73,8 +73,12 @@ import {
   type WalkProfile,
 } from "../../lib/walkProfile";
 
+const DEV_CONTROLS = import.meta.env.DEV;
+
 type SpeedMode = "fast" | "steady" | "relaxed";
-type TrackingMode = "live" | "demo";
+type TrackingMode = "live" | "demo" | "static";
+
+const FALLBACK_TRACKING_MODE: TrackingMode = DEV_CONTROLS ? "demo" : "static";
 
 const speedOptions: Array<{
   id: SpeedMode;
@@ -185,25 +189,30 @@ export function EnRouteScreen() {
     [plan],
   );
   const liveTrackingAvailable = Boolean(plan && canUseLiveTracking(plan));
+  const isLiveMode = trackingMode === "live";
+  const isStaticMode = trackingMode === "static";
   const liveProjection = useMemo(
     () =>
-      trackingMode === "live" && liveTracking.position && routeCoords.length > 0
+      isLiveMode && liveTracking.position && routeCoords.length > 0
         ? projectOntoRoute(liveTracking.position, routeCoords)
         : null,
-    [liveTracking.position, routeCoords, trackingMode],
+    [isLiveMode, liveTracking.position, routeCoords],
   );
   const destinationDistance = plan?.request.destinationPoint && liveTracking.position
     ? getDistanceMeters(liveTracking.position, plan.request.destinationPoint)
     : Number.POSITIVE_INFINITY;
   const demoProgress = plan ? Math.min(100, (simulation.elapsedSeconds / plan.totalDuration) * 100) : 0;
-  const progress = selectProgressPercent(trackingMode, liveProjection, demoProgress);
+  const trackingProgressMode = isLiveMode ? "live" : "demo";
+  const progress = isStaticMode ? 0 : selectProgressPercent(trackingProgressMode, liveProjection, demoProgress);
   const demoArrived = Boolean(plan && simulation.elapsedSeconds >= plan.totalDuration && !simulation.signalWait);
-  const arrived = selectArrivedState({
-    mode: trackingMode,
-    liveProjection,
-    distanceToDestinationMeters: destinationDistance,
-    demoArrived,
-  });
+  const arrived = isStaticMode
+    ? false
+    : selectArrivedState({
+        mode: trackingProgressMode,
+        liveProjection,
+        distanceToDestinationMeters: destinationDistance,
+        demoArrived,
+      });
   const signalLookupPoints = useMemo(
     () => (plan ? getSignalLookupPoints(plan.segments, trackingMode, liveTracking.position) : []),
     [liveTracking.position, plan, trackingMode],
@@ -211,11 +220,12 @@ export function EnRouteScreen() {
   const signalRouteKey = signalLookupPoints
     .map((point) => `${point.lat.toFixed(6)},${point.lng.toFixed(6)}`)
     .join("|");
-  const isLiveMode = trackingMode === "live";
   const elapsedJourneySecondsForState = plan
     ? isLiveMode
       ? plan.totalDuration * (liveProjection?.progressRatio ?? 0)
-      : simulation.elapsedSeconds
+      : isStaticMode
+        ? 0
+        : simulation.elapsedSeconds
     : 0;
   const currentSegmentTypeForSampling = plan
     ? getProgressState(plan.segments, elapsedJourneySecondsForState).currentSegment.type
@@ -235,8 +245,8 @@ export function EnRouteScreen() {
     }
 
     if (trackingMode === "live" && !liveTrackingAvailable) {
-      setLiveUnavailableMessage("실경로 좌표가 없어 실시간 추적을 사용할 수 없습니다. 데모 시뮬레이션으로 진행합니다.");
-      setTrackingMode("demo");
+      setLiveUnavailableMessage("이 경로에서는 실시간 추적을 사용할 수 없어 경로 정보로 안내합니다.");
+      setTrackingMode(FALLBACK_TRACKING_MODE);
       return;
     }
 
@@ -279,10 +289,10 @@ export function EnRouteScreen() {
         setLiveTracking({
           permission,
           position: null,
-          error: "이 브라우저는 위치 추적을 지원하지 않습니다. 데모 시뮬레이션으로 전환합니다.",
+          error: "이 브라우저는 위치 추적을 지원하지 않아 경로 정보로 안내합니다.",
           weakSignalMessage: null,
         });
-        setTrackingMode("demo");
+        setTrackingMode(FALLBACK_TRACKING_MODE);
         return;
       }
 
@@ -290,10 +300,10 @@ export function EnRouteScreen() {
         setLiveTracking({
           permission,
           position: null,
-          error: "위치 권한이 거부되었습니다. 데모 시뮬레이션으로 전환합니다.",
+          error: "위치 권한이 거부되어 실시간 위치 없이 경로 정보로 안내합니다.",
           weakSignalMessage: null,
         });
-        setTrackingMode("demo");
+        setTrackingMode(FALLBACK_TRACKING_MODE);
         return;
       }
 
@@ -372,7 +382,7 @@ export function EnRouteScreen() {
                 error: getGeolocationErrorMessage(error),
                 weakSignalMessage: null,
               }));
-              setTrackingMode("demo");
+              setTrackingMode(FALLBACK_TRACKING_MODE);
               return;
             }
 
@@ -394,18 +404,18 @@ export function EnRouteScreen() {
             ) {
               setLiveTracking((current) => ({
                 ...current,
-                weakSignalMessage: "GPS 신호가 약합니다. 위치가 계속 갱신되지 않으면 데모 시뮬레이션으로 전환할 수 있습니다.",
+                weakSignalMessage: "GPS 신호가 약합니다. 위치가 계속 갱신되지 않으면 경로 정보 안내로 전환할 수 있습니다.",
               }));
             }
           },
         });
-      } catch (error) {
+      } catch {
         setLiveTracking((current) => ({
           ...current,
-          error: error instanceof Error ? error.message : "위치 추적을 시작할 수 없습니다.",
+          error: "위치 추적 중 오류가 발생해 경로 정보로 안내합니다.",
           weakSignalMessage: null,
         }));
-        setTrackingMode("demo");
+        setTrackingMode(FALLBACK_TRACKING_MODE);
       }
     };
 
@@ -742,9 +752,11 @@ export function EnRouteScreen() {
   }
 
   const selectedSpeed = speedOptions.find((option) => option.id === speedMode) ?? speedOptions[1];
-  const adjustedDeltaSeconds = isLiveMode ? 0 : scaleSpeedDelta(selectedSpeed.deltaSeconds, progress);
+  const adjustedDeltaSeconds = isLiveMode || isStaticMode ? 0 : scaleSpeedDelta(selectedSpeed.deltaSeconds, progress);
   const signalDelaySeconds =
-    isLiveMode ? 0 : simulation.accumulatedSignalDelaySeconds + (simulation.signalWait?.addedDelaySeconds ?? 0);
+    isLiveMode || isStaticMode
+      ? 0
+      : simulation.accumulatedSignalDelaySeconds + (simulation.signalWait?.addedDelaySeconds ?? 0);
   const liveArrivalEstimate = isLiveMode && liveProjection
     ? estimateLiveArrival(liveProjection.progressRatio, plan, new Date())
     : null;
@@ -760,7 +772,9 @@ export function EnRouteScreen() {
   const interpolatedPosition = interpolateRoutePosition(plan.segments, progress);
   const currentMapPosition = isLiveMode
     ? liveTracking.position ?? interpolatedPosition
-    : interpolatedPosition;
+    : isStaticMode
+      ? null
+      : interpolatedPosition;
   const liveOffRoute = Boolean(isLiveMode && liveProjection && isOffRoute(liveProjection.offRouteDistanceMeters));
   const currentPaceAdvice = paceAdvice(adjustedDeviation);
   const activeSignal = getCurrentSignal(activeSignalInfo, signalNow);
@@ -799,7 +813,7 @@ export function EnRouteScreen() {
               <div className="mb-1 flex items-center gap-2 text-sm text-white">
                 <span>{plan.request.destination}까지</span>
                 <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs font-semibold">
-                  {isLiveMode ? "실시간 추적" : "데모 시뮬레이션"}
+                  {isLiveMode ? "실시간 추적" : isStaticMode ? "경로 안내" : "데모 시뮬레이션"}
                 </span>
               </div>
               <div className="truncate text-2xl font-bold tabular-nums text-white">
@@ -841,21 +855,25 @@ export function EnRouteScreen() {
           <ActionCard
             icon={Zap}
             title={
-              isLiveMode && rerouteStatus.kind === "loading"
+              isStaticMode
+                ? "실시간 위치를 사용할 수 없습니다"
+                : isLiveMode && rerouteStatus.kind === "loading"
                 ? "경로를 다시 찾는 중..."
                 : isLiveMode
                 ? getLiveTrackingActionTitle(arrived, liveTracking, liveOffRoute, currentPaceAdvice.title)
                 : getDemoActionTitle(arrived, simulation, speedMode)
             }
             description={
-              isLiveMode && rerouteStatus.kind === "loading"
+              isStaticMode
+                ? liveTracking.error ?? "위치 권한을 허용하면 실시간 도착 안내를 받을 수 있어요."
+                : isLiveMode && rerouteStatus.kind === "loading"
                 ? "현재 위치에서 목적지까지 새 경로를 조회하고 있습니다."
                 : isLiveMode
                 ? getLiveTrackingActionDescription(arrived, liveTracking, liveProjection, liveOffRoute, currentPaceAdvice.description)
                 : getDemoActionDescription(arrived, simulation, speedMode, adjustedDeviation)
             }
             variant={
-              rerouteStatus.kind === "loading" || liveOffRoute || simulation.signalWait
+              isStaticMode || rerouteStatus.kind === "loading" || liveOffRoute || simulation.signalWait
                 ? "warning"
                 : arrived || currentPaceAdvice.tone === "success"
                   ? "success"
@@ -868,7 +886,7 @@ export function EnRouteScreen() {
           >
             <div className="mt-3 border-t border-white/20 pt-3">
               <div className="flex items-center justify-between text-sm">
-                <span className="opacity-90">다음 재계산 지점</span>
+                <span className="opacity-90">다음 안내</span>
                 <span className="font-semibold">
                   {simulation.signalWait
                     ? `신호 대기 중 · ${Math.ceil(simulation.signalWait.remainingDemoSeconds)}초`
@@ -960,10 +978,10 @@ export function EnRouteScreen() {
               </div>
               <button
                 type="button"
-                onClick={() => setTrackingMode("demo")}
+                onClick={() => setTrackingMode(DEV_CONTROLS ? "demo" : "static")}
                 className="w-full rounded-lg bg-amber-600 px-3 py-2 text-xs font-semibold text-white"
               >
-                데모 시뮬레이션으로 전환
+                {DEV_CONTROLS ? "데모 시뮬레이션으로 전환" : "경로 정보로 안내하기"}
               </button>
             </div>
           )}
@@ -973,51 +991,72 @@ export function EnRouteScreen() {
               <div>
                 <div className="text-sm text-neutral-600">이동 진행도</div>
                 <div className="text-xs font-semibold text-blue-600">
-                  {isLiveMode
-                    ? getLiveModeSummary(liveTracking, liveProjection)
-                    : `${liveTracking.error ? "위치 오류로 데모 전환됨" : "데모 시뮬레이션"} · 데모 배속 ${demoSpeedLabel}`}
+                  {isStaticMode
+                    ? "경로 정보 기준 안내"
+                    : isLiveMode
+                      ? getLiveModeSummary(liveTracking, liveProjection)
+                      : getDemoModeSummary(Boolean(liveTracking.error), demoSpeedLabel)}
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                {!isLiveMode && (
+              {DEV_CONTROLS && (
+                <div className="flex items-center gap-2">
+                  {trackingMode === "demo" && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSimulation((current) => ({
+                          ...current,
+                          manualPaused: !current.manualPaused,
+                        }))
+                      }
+                      className="flex items-center gap-1 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs font-semibold text-neutral-700"
+                    >
+                      {simulation.manualPaused ? (
+                        <Play className="size-3.5" aria-hidden="true" />
+                      ) : (
+                        <Pause className="size-3.5" aria-hidden="true" />
+                      )}
+                      {simulation.manualPaused ? "재생" : "일시정지"}
+                    </button>
+                  )}
                   <button
                     type="button"
-                    onClick={() =>
-                      setSimulation((current) => ({
-                        ...current,
-                        manualPaused: !current.manualPaused,
-                      }))
-                    }
-                    className="flex items-center gap-1 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs font-semibold text-neutral-700"
+                    onClick={() => setTrackingMode(isLiveMode ? "demo" : "live")}
+                    className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700"
                   >
-                    {simulation.manualPaused ? (
-                      <Play className="size-3.5" aria-hidden="true" />
-                    ) : (
-                      <Pause className="size-3.5" aria-hidden="true" />
-                    )}
-                    {simulation.manualPaused ? "재생" : "일시정지"}
+                    {isLiveMode ? "데모로 전환" : "실시간 추적"}
                   </button>
-                )}
+                </div>
+              )}
+            </div>
+            {isStaticMode ? (
+              <div className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-3">
+                <div className="mb-3 text-xs font-semibold text-blue-700">
+                  위치 권한을 허용하면 실시간 진행률이 표시됩니다
+                </div>
                 <button
                   type="button"
-                  onClick={() => setTrackingMode(isLiveMode ? "demo" : "live")}
-                  className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700"
+                  onClick={() => setTrackingMode("live")}
+                  className="w-full rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white"
                 >
-                  {isLiveMode ? "데모로 전환" : "실시간 추적"}
+                  실시간 추적 다시 시도
                 </button>
               </div>
-            </div>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-neutral-100">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-blue-600 to-blue-400 transition-all"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-            <div className="mt-2 flex items-center justify-between text-xs text-neutral-500">
-              <span>{plan.request.origin}</span>
-              <span className="font-semibold text-blue-600">{Math.round(progress)}% 완료</span>
-              <span>{plan.request.destination}</span>
-            </div>
+            ) : (
+              <>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-neutral-100">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-blue-600 to-blue-400 transition-all"
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+                <div className="mt-2 flex items-center justify-between text-xs text-neutral-500">
+                  <span>{plan.request.origin}</span>
+                  <span className="font-semibold text-blue-600">{Math.round(progress)}% 완료</span>
+                  <span>{plan.request.destination}</span>
+                </div>
+              </>
+            )}
           </div>
         </section>
 
@@ -1030,7 +1069,7 @@ export function EnRouteScreen() {
                   <Timer className="mt-0.5 size-5 text-blue-600" aria-hidden="true" />
                   <div className="flex-1">
                     <div className="mb-1 text-sm font-semibold text-blue-900">
-                      {arrived ? "도착 완료" : "이동 중"}
+                      {isStaticMode ? "경로 안내 중" : arrived ? "도착 완료" : "이동 중"}
                     </div>
                     <div className="text-xs text-blue-700">
                       {arrived ? `${plan.request.destination}에 도착했습니다` : progressState.currentSegment.detail}
@@ -1142,7 +1181,7 @@ export function EnRouteScreen() {
               </div>
             </section>
 
-            {!isLiveMode && (
+            {DEV_CONTROLS && trackingMode === "demo" && (
               <section aria-labelledby="speed-options-title">
                 <h2 id="speed-options-title" className="mb-3 font-semibold text-neutral-900">속도 조절 옵션</h2>
                 <div className="flex flex-col gap-2">
@@ -1188,17 +1227,6 @@ export function EnRouteScreen() {
               </section>
             )}
 
-            <section aria-label="다음 재계산 지점" className="rounded-xl bg-neutral-100 p-4">
-              <div className="mb-2 flex items-center gap-2">
-                <div className="size-2 animate-pulse rounded-full bg-blue-600" />
-                <span className="text-sm font-semibold text-neutral-700">다음 재계산 지점</span>
-              </div>
-              <div className="text-xs text-neutral-600">
-                {nextEvent
-                  ? `${nextEvent.label} 도착 시 ETA를 다시 계산합니다`
-                  : "경로가 완료되어 추가 재계산 지점이 없습니다"}
-              </div>
-            </section>
           </div>
         </BottomSheet>
       </main>
@@ -1444,6 +1472,10 @@ function getDemoActionDescription(
 }
 
 function getLiveModeSummary(liveTracking: LiveTrackingState, liveProjection: ReturnType<typeof projectOntoRoute> | null): string {
+  if (!DEV_CONTROLS) {
+    return "실시간 위치로 안내 중";
+  }
+
   if (liveTracking.error) {
     return "실시간 추적 · 위치 오류";
   }
@@ -1462,6 +1494,10 @@ function getLiveModeSummary(liveTracking: LiveTrackingState, liveProjection: Ret
     : "";
 
   return `실시간 추적 · ${accuracy}${routeDistance}`;
+}
+
+function getDemoModeSummary(hasPositionError: boolean, demoSpeedLabel: string): string {
+  return `${hasPositionError ? "위치 오류로 데모 전환됨" : "데모 시뮬레이션"} · 데모 배속 ${demoSpeedLabel}`;
 }
 
 function getSpeedActionTitle(mode: SpeedMode): string {
@@ -1520,18 +1556,18 @@ function getCrossingPoints(segments: RouteSegment[]): Array<{ lat: number; lng: 
 
 function getGeolocationErrorMessage(error: GeolocationPositionError): string {
   if (error.code === error.PERMISSION_DENIED) {
-    return "위치 권한이 거부되었습니다. 데모 시뮬레이션으로 전환합니다.";
+    return "위치 권한이 거부되어 실시간 위치 없이 경로 정보로 안내합니다.";
   }
 
   if (error.code === error.POSITION_UNAVAILABLE) {
-    return "현재 위치를 확인할 수 없습니다. 데모 시뮬레이션으로 전환합니다.";
+    return "현재 위치를 확인할 수 없어 경로 정보로 안내합니다.";
   }
 
   if (error.code === error.TIMEOUT) {
-    return "위치 확인 시간이 초과되었습니다. 데모 시뮬레이션으로 전환합니다.";
+    return "위치 확인 시간이 초과되어 경로 정보로 안내합니다.";
   }
 
-  return "위치 추적 중 오류가 발생했습니다. 데모 시뮬레이션으로 전환합니다.";
+  return "위치 추적 중 오류가 발생해 경로 정보로 안내합니다.";
 }
 
 function buildPlanForMode(
