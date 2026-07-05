@@ -5,6 +5,7 @@ import { MainScreen } from "./components/screens/MainScreen";
 import { RouteResultScreen } from "./components/screens/RouteResultScreen";
 import { EnRouteScreen } from "./components/screens/EnRouteScreen";
 import { DesignSystemGuide } from "./components/screens/DesignSystemGuide";
+import { PrivacyPolicyScreen } from "./components/screens/PrivacyPolicyScreen";
 import { RouteProvider, useRouteState } from "./context/RouteContext";
 import {
   fireDepartureNotification,
@@ -78,6 +79,7 @@ function AppShell() {
             }
           />
           <Route path="/design-system" element={<DesignSystemGuide />} />
+          <Route path="/privacy" element={<PrivacyPolicyScreen />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         {inAppAlarm && (
